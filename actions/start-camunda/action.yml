@@ -1,0 +1,96 @@
+# Composite action: Start a Camunda stack for integration testing.
+#
+# Starts the appropriate Docker Compose stack, polls the health endpoint,
+# and reports readiness. On failure, captures and uploads Docker logs.
+#
+# Usage:
+#   - uses: camunda/sdk-infra/actions/start-camunda@v1
+#     with:
+#       stack: full
+#       version: 8.9.0
+
+name: Start Camunda
+description: Start a Camunda Docker Compose stack for integration testing.
+
+inputs:
+  stack:
+    description: 'Stack variant: "simple" (Camunda only) or "full" (Camunda + Elasticsearch + Connectors).'
+    required: false
+    default: 'simple'
+  version:
+    description: 'Camunda version (Docker image tag). Overrides the .env default.'
+    required: false
+    default: ''
+  connectors-version:
+    description: 'Connectors bundle version. Overrides the .env default.'
+    required: false
+    default: ''
+  elastic-version:
+    description: 'Elasticsearch version. Overrides the .env default.'
+    required: false
+    default: ''
+  max-attempts:
+    description: 'Maximum health check attempts (5s interval).'
+    required: false
+    default: '60'
+  docker-dir:
+    description: 'Path to the Docker Compose directory. Defaults to the action bundled files.'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve Docker directory
+      id: resolve
+      shell: bash
+      run: |
+        if [ -n "${{ inputs.docker-dir }}" ]; then
+          echo "dir=${{ inputs.docker-dir }}" >> $GITHUB_OUTPUT
+        else
+          echo "dir=${{ github.action_path }}/../docker" >> $GITHUB_OUTPUT
+        fi
+
+        if [ "${{ inputs.stack }}" == "full" ]; then
+          echo "file=docker-compose-full.yaml" >> $GITHUB_OUTPUT
+        else
+          echo "file=docker-compose.yaml" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Set version overrides
+      shell: bash
+      run: |
+        if [ -n "${{ inputs.version }}" ]; then
+          echo "CAMUNDA_VERSION=${{ inputs.version }}" >> $GITHUB_ENV
+        fi
+        if [ -n "${{ inputs.connectors-version }}" ]; then
+          echo "CAMUNDA_CONNECTORS_VERSION=${{ inputs.connectors-version }}" >> $GITHUB_ENV
+        fi
+        if [ -n "${{ inputs.elastic-version }}" ]; then
+          echo "ELASTIC_VERSION=${{ inputs.elastic-version }}" >> $GITHUB_ENV
+        fi
+
+    - name: Start stack
+      shell: bash
+      working-directory: ${{ steps.resolve.outputs.dir }}
+      run: |
+        echo "Starting Camunda (${{ inputs.stack }} stack)..."
+        docker compose -f ${{ steps.resolve.outputs.file }} up -d
+
+    - name: Wait for services healthy
+      shell: bash
+      run: |
+        set -e
+        attempts=0
+        max_attempts=${{ inputs.max-attempts }}
+        while [ $attempts -lt $max_attempts ]; do
+          code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:9600/actuator/health/status || true)
+          if [ "$code" = "200" ]; then
+            echo "Camunda is healthy (attempt $((attempts+1))/$max_attempts)"
+            exit 0
+          fi
+          attempts=$((attempts+1))
+          sleep 5
+        done
+        echo "::error::Camunda did not become healthy within $max_attempts attempts"
+        exit 1

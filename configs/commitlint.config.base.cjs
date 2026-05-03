@@ -1,0 +1,24 @@
+// Shared commitlint base configuration for all Camunda SDK repos.
+//
+// Usage in SDK repos:
+//   module.exports = require('@camunda/sdk-infra/configs/commitlint.config.base.cjs');
+//
+// Or extend with overrides:
+//   module.exports = {
+//     ...require('@camunda/sdk-infra/configs/commitlint.config.base.cjs'),
+//     rules: {
+//       ...require('@camunda/sdk-infra/configs/commitlint.config.base.cjs').rules,
+//       'body-max-line-length': [2, 'always', 500],
+//     },
+//   };
+
+module.exports = {
+  extends: ['@commitlint/config-conventional'],
+  rules: {
+    // No PascalCase subjects (proper nouns excepted by convention)
+    'subject-case': [2, 'never', ['pascal-case']],
+    // Enforce concise subjects for better changelog readability
+    'subject-max-length': [2, 'always', 100],
+    'subject-min-length': [2, 'always', 5],
+  },
+};

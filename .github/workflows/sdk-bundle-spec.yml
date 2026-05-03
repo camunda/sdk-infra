@@ -1,0 +1,66 @@
+# Reusable workflow: Fetch and bundle the upstream OpenAPI spec.
+#
+# Produces a bundled spec and metadata as a GitHub Actions artifact
+# that downstream jobs can consume via actions/download-artifact.
+#
+# Usage:
+#   jobs:
+#     bundle:
+#       uses: camunda/sdk-infra/.github/workflows/sdk-bundle-spec.yml@v1
+#       with:
+#         spec-ref: stable/8.9
+
+name: Bundle OpenAPI Spec
+
+on:
+  workflow_call:
+    inputs:
+      spec-ref:
+        description: 'Git ref (branch/tag/SHA) in camunda/camunda to fetch the spec from.'
+        required: false
+        default: 'main'
+        type: string
+      artifact-name:
+        description: 'Name of the artifact to upload.'
+        required: false
+        default: 'bundled-spec'
+        type: string
+      node-version:
+        description: 'Node.js version to use for the bundler.'
+        required: false
+        default: '22'
+        type: string
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Create output directory
+        run: mkdir -p bundled
+
+      - name: Fetch and bundle spec
+        run: |
+          npx --yes camunda-schema-bundler \
+            --ref "${{ inputs.spec-ref }}" \
+            --deref-path-local \
+            --output-spec bundled/rest-api.bundle.json \
+            --output-metadata bundled/spec-metadata.json
+
+      - name: Verify output
+        run: |
+          test -f bundled/rest-api.bundle.json || { echo "::error::Bundled spec not found"; exit 1; }
+          test -f bundled/spec-metadata.json || { echo "::error::Spec metadata not found"; exit 1; }
+          echo "Bundled spec size: $(wc -c < bundled/rest-api.bundle.json) bytes"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: bundled/
+          retention-days: 1

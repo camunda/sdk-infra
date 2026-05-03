@@ -1,0 +1,53 @@
+# Reusable workflow: Lint commit messages with commitlint.
+#
+# Validates that PR commits follow Conventional Commits format.
+# Uses the shared commitlint config from this repo by default,
+# or the calling repo's own config if present.
+#
+# Usage:
+#   jobs:
+#     commitlint:
+#       if: github.event_name == 'pull_request'
+#       uses: camunda/sdk-infra/.github/workflows/sdk-commitlint.yml@v1
+
+name: Commitlint
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: 'Node.js version.'
+        required: false
+        default: '22'
+        type: string
+
+jobs:
+  commitlint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Install commitlint
+        run: |
+          # Use the calling repo's package.json if it has commitlint,
+          # otherwise install standalone.
+          if [ -f package.json ] && grep -q commitlint package.json; then
+            npm ci
+          else
+            npm install --no-save @commitlint/cli @commitlint/config-conventional
+          fi
+
+      - name: Lint commits
+        run: |
+          npx commitlint \
+            --from ${{ github.event.pull_request.base.sha }} \
+            --to ${{ github.event.pull_request.head.sha }} \
+            --verbose

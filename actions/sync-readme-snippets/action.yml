@@ -1,0 +1,47 @@
+# Composite action: Sync README code snippets from example files.
+#
+# Runs the unified snippet sync script that works across all SDK languages.
+#
+# Usage:
+#   - uses: camunda/sdk-infra/actions/sync-readme-snippets@v1
+#     with:
+#       lang: python
+#       check: true
+
+name: Sync README Snippets
+description: Synchronize code snippets in README.md from compilable example files.
+
+inputs:
+  lang:
+    description: 'Language for region tag detection: csharp, python, or typescript.'
+    required: true
+  check:
+    description: 'Check mode (exit 1 if out of sync) rather than updating in-place.'
+    required: false
+    default: 'false'
+  readme:
+    description: 'Path to README.md (relative to workspace root).'
+    required: false
+    default: 'README.md'
+  examples-dir:
+    description: 'Directory containing example source files.'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Run snippet sync
+      shell: bash
+      run: |
+        ARGS="--lang ${{ inputs.lang }} --readme ${{ inputs.readme }}"
+
+        if [ -n "${{ inputs.examples-dir }}" ]; then
+          ARGS="$ARGS --examples-dir ${{ inputs.examples-dir }}"
+        fi
+
+        if [ "${{ inputs.check }}" == "true" ]; then
+          ARGS="$ARGS --check"
+        fi
+
+        python3 ${{ github.action_path }}/../../scripts/sync-readme-snippets.py $ARGS

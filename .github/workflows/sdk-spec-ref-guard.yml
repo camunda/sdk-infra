@@ -1,0 +1,75 @@
+# Reusable workflow: Validate the spec-ref override.
+#
+# Guards against stale SPEC_REF_OVERRIDE repo variables by requiring
+# an acknowledgment flag and an expiry date. Fails if the override
+# has expired.
+#
+# Usage:
+#   jobs:
+#     guard:
+#       uses: camunda/sdk-infra/.github/workflows/sdk-spec-ref-guard.yml@v1
+#       with:
+#         spec-ref: ${{ env.SPEC_REF }}
+#         default-ref: 'stable/8.9'
+#         ack: ${{ vars.SPEC_REF_OVERRIDE_ACK }}
+#         expires: ${{ vars.SPEC_REF_OVERRIDE_EXPIRES }}
+
+name: Spec Ref Guard
+
+on:
+  workflow_call:
+    inputs:
+      spec-ref:
+        description: 'The resolved SPEC_REF value.'
+        required: true
+        type: string
+      default-ref:
+        description: 'The expected default ref (guard only activates when spec-ref differs).'
+        required: true
+        type: string
+      ack:
+        description: 'Value of SPEC_REF_OVERRIDE_ACK repo variable.'
+        required: false
+        default: ''
+        type: string
+      expires:
+        description: 'Value of SPEC_REF_OVERRIDE_EXPIRES repo variable (YYYY-MM-DD).'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Validate spec ref override
+        run: |
+          set -euo pipefail
+          echo "SPEC_REF=${{ inputs.spec-ref }}"
+          echo "DEFAULT_REF=${{ inputs.default-ref }}"
+
+          if [[ "${{ inputs.spec-ref }}" == "${{ inputs.default-ref }}" ]]; then
+            echo "Using default ref — no guard needed."
+            exit 0
+          fi
+
+          echo "SPEC_REF is overridden (not the default)."
+
+          if [[ "${{ inputs.ack }}" != "true" ]]; then
+            echo "::error::SPEC_REF is overridden but SPEC_REF_OVERRIDE_ACK is not 'true'. Set the repo variable to acknowledge this is temporary."
+            exit 1
+          fi
+
+          if [[ -z "${{ inputs.expires }}" ]]; then
+            echo "::error::SPEC_REF is overridden but SPEC_REF_OVERRIDE_EXPIRES is not set (expected YYYY-MM-DD)."
+            exit 1
+          fi
+
+          today="$(date -u +%F)"
+          if [[ "${today}" > "${{ inputs.expires }}" ]]; then
+            echo "::error::SPEC_REF override expired on ${{ inputs.expires }}. Remove SPEC_REF_OVERRIDE (or extend expiry)."
+            exit 1
+          fi
+
+          echo "Override valid (expires ${{ inputs.expires }})."

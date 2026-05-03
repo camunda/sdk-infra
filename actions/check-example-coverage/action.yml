@@ -1,0 +1,42 @@
+# Composite action: Check example coverage against the OpenAPI spec.
+#
+# Validates that every operationId in the spec has a corresponding
+# entry in the SDK's operation-map.json.
+#
+# Usage:
+#   - uses: camunda/sdk-infra/actions/check-example-coverage@v1
+#     with:
+#       operation-map: examples/operation-map.json
+
+name: Check Example Coverage
+description: Validate that all API operations have example code.
+
+inputs:
+  operation-map:
+    description: 'Path to the operation-map.json file.'
+    required: false
+    default: 'examples/operation-map.json'
+  spec:
+    description: 'Path to the bundled OpenAPI spec.'
+    required: false
+    default: 'external-spec/bundled/rest-api.bundle.json'
+  examples-dir:
+    description: 'Directory containing example source files (for integrity check).'
+    required: false
+    default: 'examples'
+  key-style:
+    description: 'Key style in operation-map: camelCase, snake_case, or PascalCase.'
+    required: false
+    default: 'camelCase'
+
+runs:
+  using: composite
+  steps:
+    - name: Check coverage
+      shell: bash
+      run: |
+        python3 ${{ github.action_path }}/../../scripts/check-example-coverage.py \
+          --spec "${{ inputs.spec }}" \
+          --map "${{ inputs.operation-map }}" \
+          --examples-dir "${{ inputs.examples-dir }}" \
+          --key-style "${{ inputs.key-style }}"
