@@ -1,0 +1,20 @@
+{
+  "name": "@camunda/sdk-infra",
+  "version": "1.0.0",
+  "description": "Shared infrastructure for Camunda SDK repositories",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/camunda/sdk-infra.git"
+  },
+  "license": "Apache-2.0",
+  "files": [
+    "configs/",
+    "scripts/",
+    "schema/",
+    "docker/",
+    "policies/"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}
