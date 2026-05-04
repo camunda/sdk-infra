@@ -121,8 +121,6 @@ This repo uses two versioning schemes:
 - **npm package**: Automated via [semantic-release](https://github.com/semantic-release/semantic-release) on the `main` branch. The version in `package.json` is `0.0.0-semantic-release` (sentinel — never edit manually).
 - **GitHub refs**: Manual tags (`v1`, `v1.1.0`, etc.) for reusable workflows and actions. SDK repos pin to a major version tag (`@v1`). Breaking changes increment the major version.
 
-> **Note:** npm provenance is currently disabled because this is a private repo. Tracked in [#1](https://github.com/camunda/sdk-infra/issues/1) for when the repo goes public.
-
 ### Commit message guidelines
 
 We use Conventional Commits (enforced by commitlint in CI).
