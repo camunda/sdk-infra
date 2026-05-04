@@ -1,6 +1,6 @@
 {
   "name": "@camunda8/sdk-infra",
-  "version": "1.0.0",
+  "version": "0.0.0-semantic-release",
   "description": "Shared infrastructure for Camunda SDK repositories",
   "repository": {
     "type": "git",
@@ -17,7 +17,7 @@
   ],
   "publishConfig": {
     "access": "public",
-    "provenance": true
+    "provenance": false
   },
   "devDependencies": {
     "semantic-release": "^24.0.0"
