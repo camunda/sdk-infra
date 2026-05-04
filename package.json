@@ -1,5 +1,5 @@
 {
-  "name": "@camunda/sdk-infra",
+  "name": "@camunda8/sdk-infra",
   "version": "1.0.0",
   "description": "Shared infrastructure for Camunda SDK repositories",
   "repository": {
@@ -12,9 +12,22 @@
     "scripts/",
     "schema/",
     "docker/",
-    "policies/"
+    "policies/",
+    "operations-baseline.json"
   ],
   "publishConfig": {
     "access": "public"
+  },
+  "devDependencies": {
+    "semantic-release": "^24.0.0"
+  },
+  "release": {
+    "branches": ["main"],
+    "plugins": [
+      "@semantic-release/commit-analyzer",
+      "@semantic-release/release-notes-generator",
+      "@semantic-release/npm",
+      "@semantic-release/github"
+    ]
   }
 }
