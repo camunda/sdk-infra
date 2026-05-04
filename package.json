@@ -19,6 +19,9 @@
     "access": "public",
     "provenance": false
   },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  },
   "devDependencies": {
     "semantic-release": "^24.0.0"
   },
