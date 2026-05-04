@@ -32,14 +32,14 @@ Downstream consumers — changes here affect all of them, so test thoroughly:
 | `policies/` | Canonical contributor guidelines (`AGENTS.md`) — published to npm |
 | `actions/` | Composite GitHub Actions (start-camunda, sync-readme-snippets, check-example-coverage) — **not** published to npm |
 | `.github/workflows/` | Reusable CI workflows (spec bundling, commitlint, spec-ref guard, detect new ops) — consumed via `uses:` |
-| `operations-baseline.json` | Known operations baseline for new-operation detection — published to npm |
+
 | `MIGRATION.md` | Step-by-step guide for adopting sdk-infra in existing SDK repos |
 
 ### What gets published where
 
 This repo has **two distribution channels**:
 
-1. **npm package** (`@camunda8/sdk-infra`): `configs/`, `scripts/`, `schema/`, `docker/`, `policies/`, `operations-baseline.json`. Controlled by the `files` array in `package.json`. The `.npmignore` excludes `actions/`, `.github/`, and build artifacts.
+1. **npm package** (`@camunda8/sdk-infra`): `configs/`, `scripts/`, `schema/`, `docker/`, `policies/`. Controlled by the `files` array in `package.json`. The `.npmignore` excludes `actions/`, `.github/`, and build artifacts.
 2. **GitHub refs** (`camunda/sdk-infra@v1`): reusable workflows in `.github/workflows/` and composite actions in `actions/`. Consumed by downstream repos via `uses:` in their CI.
 
 When adding new content, decide which channel it belongs to. Configs and scripts go to npm. Workflow automation goes to GitHub refs.
@@ -78,8 +78,8 @@ The currently promoted stable major is set via the `CAMUNDA_SDK_CURRENT_STABLE_M
 | `sdk-bundle-spec.yml` | Fetch and bundle upstream OpenAPI spec |
 | `sdk-commitlint.yml` | Lint PR commit messages |
 | `sdk-spec-ref-guard.yml` | Validate `SPEC_REF` overrides with expiry |
-| `sdk-detect-new-ops.yml` | Detect new operations in the OpenAPI spec |
-| `scheduled-detect-new-ops.yml` | Scheduled trigger for new-operation detection |
+| `sdk-detect-new-ops.yml` | Detect operations missing SDK example coverage (checks each SDK's `operation-map.json`) |
+| `scheduled-detect-new-ops.yml` | Scheduled daily check for SDK coverage gaps |
 
 #### Composite actions
 

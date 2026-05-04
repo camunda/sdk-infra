@@ -1,7 +1,8 @@
 # Scheduled workflow: Daily check for new operations in the upstream spec.
 #
-# Bundles the spec from the default upstream branch, compares against the
-# checked-in baseline, and opens a tracking issue if new operations are found.
+# Bundles the spec from the default upstream branch, fetches each SDK's
+# operation-map.json from GitHub, and opens a tracking issue for any
+# operations not yet covered by at least one SDK.
 #
 # Runs daily at 07:00 UTC (weekdays). Can also be triggered manually.
 
@@ -33,11 +34,25 @@ jobs:
             --output-spec current-spec/rest-api.bundle.json \
             --output-metadata current-spec/spec-metadata.json
 
-      - name: Extract current operations
+      - name: Fetch SDK operation maps
+        run: |
+          mkdir -p sdk-maps
+          # Fetch operation-map.json from each SDK repo's default branch
+          for repo in orchestration-cluster-api-js orchestration-cluster-api-python orchestration-cluster-api-csharp; do
+            curl -sfL \
+              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              "https://raw.githubusercontent.com/camunda/${repo}/main/examples/operation-map.json" \
+              -o "sdk-maps/${repo}.json" || echo "{}" > "sdk-maps/${repo}.json"
+          done
+
+      - name: Compare spec against SDK coverage
         id: diff
         run: |
           node -e "
-            const spec = JSON.parse(require('fs').readFileSync('current-spec/rest-api.bundle.json', 'utf8'));
+            const fs = require('fs');
+            const spec = JSON.parse(fs.readFileSync('current-spec/rest-api.bundle.json', 'utf8'));
+
+            // Extract all operations from spec
             const ops = [];
             for (const [path, item] of Object.entries(spec.paths || {})) {
               for (const [method, op] of Object.entries(item)) {
@@ -46,28 +61,47 @@ jobs:
                 }
               }
             }
-            require('fs').writeFileSync('current-ops.json', JSON.stringify(ops, null, 2));
-            console.log('Current operations: ' + ops.length);
-          "
+            console.log('Spec operations: ' + ops.length);
 
-          if [ -f operations-baseline.json ]; then
-            node -e "
-              const current = JSON.parse(require('fs').readFileSync('current-ops.json', 'utf8'));
-              const baseline = JSON.parse(require('fs').readFileSync('operations-baseline.json', 'utf8'));
-              const baseIds = new Set(baseline.map(o => o.operationId));
-              const newOps = current.filter(o => !baseIds.has(o.operationId));
-              console.log('New operations: ' + newOps.length);
-              for (const op of newOps) console.log('  + ' + op.operationId + ' (' + op.method + ' ' + op.path + ')');
-              require('fs').writeFileSync('/tmp/new-ops.json', JSON.stringify(newOps));
-            "
-            echo "new_ops=$(cat /tmp/new-ops.json)" >> $GITHUB_OUTPUT
-          else
-            echo "No baseline found — skipping diff."
-            echo 'new_ops=[]' >> $GITHUB_OUTPUT
-          fi
+            // Load each SDK's operation-map keys
+            const jsMap = JSON.parse(fs.readFileSync('sdk-maps/orchestration-cluster-api-js.json', 'utf8'));
+            const pyMap = JSON.parse(fs.readFileSync('sdk-maps/orchestration-cluster-api-python.json', 'utf8'));
+            const csMap = JSON.parse(fs.readFileSync('sdk-maps/orchestration-cluster-api-csharp.json', 'utf8'));
+
+            const jsKeys = new Set(Object.keys(jsMap));
+            const pyKeys = new Set(Object.keys(pyMap));
+            const csKeys = new Set(Object.keys(csMap));
+
+            // Python uses snake_case keys
+            function toSnakeCase(name) {
+              return name.replace(/([A-Z]+)([A-Z][a-z])/g, '\$1_\$2')
+                         .replace(/([a-z0-9])([A-Z])/g, '\$1_\$2')
+                         .toLowerCase();
+            }
+
+            // Build per-operation coverage
+            const uncovered = [];
+            for (const op of ops) {
+              const id = op.operationId;
+              const js = jsKeys.has(id);
+              const py = pyKeys.has(toSnakeCase(id));
+              const cs = csKeys.has(id);
+              if (!js || !py || !cs) {
+                uncovered.push({ ...op, js, py, cs });
+              }
+            }
+
+            console.log('Uncovered in at least one SDK: ' + uncovered.length);
+            for (const op of uncovered) {
+              const flags = [op.js ? 'JS:ok' : 'JS:missing', op.py ? 'PY:ok' : 'PY:missing', op.cs ? 'CS:ok' : 'CS:missing'].join(' ');
+              console.log('  ' + op.operationId + ' (' + flags + ')');
+            }
+            fs.writeFileSync('/tmp/uncovered.json', JSON.stringify(uncovered));
+          "
+          echo "uncovered=$(cat /tmp/uncovered.json)" >> $GITHUB_OUTPUT
 
       - name: Check for existing issue
-        if: steps.diff.outputs.new_ops != '[]' && steps.diff.outputs.new_ops != ''
+        if: steps.diff.outputs.uncovered != '[]' && steps.diff.outputs.uncovered != ''
         id: existing
         uses: actions/github-script@v7
         with:
@@ -82,33 +116,34 @@ jobs:
 
       - name: Open tracking issue
         if: >
-          steps.diff.outputs.new_ops != '[]' &&
-          steps.diff.outputs.new_ops != '' &&
+          steps.diff.outputs.uncovered != '[]' &&
+          steps.diff.outputs.uncovered != '' &&
           steps.existing.outputs.has_open != 'true'
         uses: actions/github-script@v7
         with:
           script: |
-            const newOps = JSON.parse('${{ steps.diff.outputs.new_ops }}');
-            if (!newOps.length) return;
+            const uncovered = JSON.parse('${{ steps.diff.outputs.uncovered }}');
+            if (!uncovered.length) return;
 
-            const rows = newOps.map(op =>
-              `| \`${op.operationId}\` | \`${op.method}\` | \`${op.path}\` | :x: | :x: | :x: |`
+            const icon = (v) => v ? ':white_check_mark:' : ':x:';
+            const rows = uncovered.map(op =>
+              `| \`${op.operationId}\` | \`${op.method}\` | \`${op.path}\` | ${icon(op.js)} | ${icon(op.py)} | ${icon(op.cs)} |`
             ).join('\n');
 
-            const body = `## New operations detected in spec
+            const body = `## Operations missing SDK example coverage
 
             | Operation | Method | Path | JS | Python | C# |
             |-----------|--------|------|----|--------|----|
             ${rows}
 
-            Each SDK repo should add an \`operation-map.json\` entry and example code for these operations.
+            Each SDK repo should add an \`operation-map.json\` entry and example code for uncovered operations.
 
-            _Auto-generated by the daily new operations check._`;
+            _Auto-generated by the daily new operations check. Coverage is determined by each SDK's \`examples/operation-map.json\`._`;
 
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `New API operations: ${newOps.map(o => o.operationId).join(', ')}`,
+              title: `SDK coverage gaps: ${uncovered.map(o => o.operationId).join(', ')}`,
               body,
               labels: ['new-operations', 'sdk-coverage'],
             });

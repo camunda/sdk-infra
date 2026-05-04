@@ -12,8 +12,7 @@
     "scripts/",
     "schema/",
     "docker/",
-    "policies/",
-    "operations-baseline.json"
+    "policies/"
   ],
   "publishConfig": {
     "access": "public",
