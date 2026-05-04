@@ -16,7 +16,8 @@
     "operations-baseline.json"
   ],
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "provenance": true
   },
   "devDependencies": {
     "semantic-release": "^24.0.0"
