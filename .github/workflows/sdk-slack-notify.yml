@@ -1,0 +1,64 @@
+# Reusable workflow: Notify a Slack channel when a release job fails.
+#
+# Posts a message to Slack via an Incoming Webhook when the calling
+# workflow's release/publish job fails. Skipped gracefully if the
+# webhook secret is not configured yet.
+#
+# Usage:
+#   jobs:
+#     release:
+#       # ... your release job ...
+#
+#     notify-release-failure:
+#       needs: [release]
+#       if: failure()
+#       uses: camunda/sdk-infra/.github/workflows/sdk-slack-notify.yml@v1
+#       with:
+#         repo-name: orchestration-cluster-api-python
+#         workflow-name: Publish
+#       secrets:
+#         slack-webhook-url: ${{ secrets.SLACK_SDK_ALERTS }}
+
+name: Slack Release Notification
+
+on:
+  workflow_call:
+    inputs:
+      repo-name:
+        description: 'Repository name (e.g. orchestration-cluster-api-python)'
+        required: true
+        type: string
+      workflow-name:
+        description: 'Name of the calling workflow (e.g. Publish, Release)'
+        required: false
+        default: 'Release'
+        type: string
+    secrets:
+      slack-webhook-url:
+        description: 'Slack Incoming Webhook URL'
+        required: false
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    if: ${{ secrets.slack-webhook-url != '' }}
+    timeout-minutes: 2
+    steps:
+      - name: Send Slack notification
+        uses: slackapi/slack-github-action@v3.0.2
+        with:
+          webhook: ${{ secrets.slack-webhook-url }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": ":x: *${{ inputs.workflow-name }} failed* for `${{ inputs.repo-name }}` on `${{ github.ref_name }}`",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ":x: *${{ inputs.workflow-name }} failed*\n\n*Repo:* `${{ inputs.repo-name }}`\n*Branch:* `${{ github.ref_name }}`\n*Run:* <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View workflow run>"
+                  }
+                }
+              ]
+            }

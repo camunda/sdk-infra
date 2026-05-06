@@ -80,6 +80,7 @@ The currently promoted stable major is set via the `CAMUNDA_SDK_CURRENT_STABLE_M
 | `sdk-spec-ref-guard.yml` | Validate `SPEC_REF` overrides with expiry |
 | `sdk-detect-new-ops.yml` | Detect operations missing SDK example coverage; opens per-SDK issues and a cross-linked summary (requires `SDK_ISSUE_TOKEN` secret for cross-repo issues) |
 | `scheduled-detect-new-ops.yml` | Scheduled daily check for SDK coverage gaps with cross-repo issue creation |
+| `sdk-slack-notify.yml` | Send a Slack notification when a release/publish workflow fails (requires `SLACK_SDK_ALERTS` repo secret) |
 
 #### Composite actions
 
