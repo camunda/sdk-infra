@@ -41,10 +41,10 @@ on:
 jobs:
   notify:
     runs-on: ubuntu-latest
-    if: ${{ secrets.slack-webhook-url != '' }}
     timeout-minutes: 2
     steps:
       - name: Send Slack notification
+        if: ${{ secrets.slack-webhook-url != '' }}
         uses: slackapi/slack-github-action@v3.0.2
         with:
           webhook: ${{ secrets.slack-webhook-url }}
