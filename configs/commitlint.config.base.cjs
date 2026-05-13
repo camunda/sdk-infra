@@ -18,8 +18,9 @@ module.exports = {
   rules: {
     // No PascalCase subjects (proper nouns excepted by convention)
     'subject-case': [2, 'never', ['pascal-case']],
-    // Enforce concise subjects for better changelog readability
-    'subject-max-length': [2, 'always', 100],
+    // Allow longer subjects/headers for Dependabot multi-package bumps
+    'header-max-length': [2, 'always', 200],
+    'subject-max-length': [2, 'always', 200],
     'subject-min-length': [2, 'always', 5],
     // Allow long body lines (dependency updates, URLs, detailed explanations)
     'body-max-line-length': [2, 'always', 500],
