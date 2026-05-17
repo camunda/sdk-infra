@@ -24,12 +24,14 @@ jobs:
   breaking-change-guard:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - name: Check for bypass label
         id: bypass
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
           # Query labels live so the bypass works on re-runs after adding the label.
           labels=$(gh api "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels" --jq '.[].name')
