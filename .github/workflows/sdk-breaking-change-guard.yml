@@ -67,7 +67,7 @@ jobs:
 
             # Check for BREAKING CHANGE: or BREAKING-CHANGE: in body/footer.
             # Case-sensitive to match conventional-commits-parser (uppercase only).
-            if echo "$body" | grep -qE '^BREAKING[ -]CHANGE: '; then
+            if echo "$body" | grep -qE '^BREAKING[ -]CHANGE:'; then
               reasons+=("body/footer contains BREAKING CHANGE marker")
             fi
 
