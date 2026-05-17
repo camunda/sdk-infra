@@ -1,0 +1,95 @@
+# Reusable workflow: Detect breaking change commits in a PR.
+#
+# Scans all PR commits for BREAKING CHANGE markers that would trigger
+# a major version bump via semantic-release. These markers are often
+# added by AI agents for intra-branch corrections and should be
+# removed before merging.
+#
+# Detected patterns (matching semantic-release / conventional-commits-parser):
+#   - `BREAKING CHANGE:` or `BREAKING-CHANGE:` in the commit body/footer
+#   - `!` after the type/scope (e.g., `feat!:`, `fix(scope)!:`)
+#
+# Usage:
+#   jobs:
+#     breaking-change-guard:
+#       if: github.event_name == 'pull_request'
+#       uses: camunda/sdk-infra/.github/workflows/sdk-breaking-change-guard.yml@v1
+
+name: Breaking Change Guard
+
+on:
+  workflow_call:
+
+jobs:
+  breaking-change-guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check for bypass label
+        id: bypass
+        env:
+          LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
+        run: |
+          if echo "$LABELS" | grep -q 'breaking-change-approved'; then
+            echo "The 'breaking-change-approved' label is present — skipping guard."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v6
+        if: steps.bypass.outputs.skip != 'true'
+        with:
+          fetch-depth: 0
+
+      - name: Check for breaking change commits
+        if: steps.bypass.outputs.skip != 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          found=0
+
+          echo "Scanning commits from $BASE_SHA to $HEAD_SHA for breaking change markers..."
+          echo ""
+
+          while IFS= read -r sha; do
+            subject=$(git log -1 --format='%s' "$sha")
+            body=$(git log -1 --format='%b' "$sha")
+
+            reasons=()
+
+            # Check for `!` after type/scope: feat!: ..., fix(scope)!: ...
+            if echo "$subject" | grep -qE '^[a-z]+(\([^)]*\))?!:'; then
+              reasons+=("subject contains '!' marker: $subject")
+            fi
+
+            # Check for BREAKING CHANGE: or BREAKING-CHANGE: in body/footer
+            if echo "$body" | grep -qiE '^BREAKING[ -]CHANGE:'; then
+              reasons+=("body/footer contains BREAKING CHANGE marker")
+            fi
+
+            if [ ${#reasons[@]} -gt 0 ]; then
+              found=1
+              echo "::error::Commit $sha will trigger a major version bump"
+              echo "  Subject: $subject"
+              for reason in "${reasons[@]}"; do
+                echo "  - $reason"
+              done
+              echo ""
+            fi
+          done < <(git rev-list "$BASE_SHA".."$HEAD_SHA")
+
+          if [ "$found" -eq 1 ]; then
+            echo ""
+            echo "::error::This PR contains commits with breaking change markers that will trigger a major version bump."
+            echo ""
+            echo "If the breaking change is intentional, add the 'breaking-change-approved' label to this PR."
+            echo "Otherwise, rewrite the commit history to remove the markers before merging."
+            echo ""
+            echo "Common fix: use 'git rebase -i' to edit the offending commit(s) and remove"
+            echo "'BREAKING CHANGE:' from the body or '!' from the type (e.g., 'feat!:' → 'feat:')."
+            exit 1
+          fi
+
+          echo "No breaking change markers found."
