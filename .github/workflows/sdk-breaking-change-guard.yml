@@ -34,7 +34,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           # Query labels live so the bypass works on re-runs after adding the label.
-          labels=$(gh api "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels" --jq '.[].name')
+          labels=$(gh api --paginate "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels" --jq '.[].name')
           if echo "$labels" | grep -qxF 'breaking-change-approved'; then
             echo "The 'breaking-change-approved' label is present — skipping guard."
             echo "skip=true" >> "$GITHUB_OUTPUT"
