@@ -74,9 +74,10 @@ jobs:
 
             reasons=()
 
-            # Check for `!` after type/scope: feat!: ..., fix(scope)!: ...
+            # Check for `!` after type/scope: feat!: ..., fix(scope)!: ..., FEAT!: ...
             # Requires space after colon to match conventional-commits-parser.
-            if echo "$subject" | grep -qE '^[a-z]+(\([^)]*\))?!: '; then
+            # Accepts both lowercase and uppercase types (parser is case-insensitive on type).
+            if echo "$subject" | grep -qiE '^[a-z]+(\([^)]*\))?!: '; then
               reasons+=("subject contains '!' marker: $subject")
             fi
 
