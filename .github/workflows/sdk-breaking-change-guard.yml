@@ -28,9 +28,12 @@ jobs:
       - name: Check for bypass label
         id: bypass
         env:
-          LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
-          if echo "$LABELS" | jq -e 'any(. == "breaking-change-approved")' > /dev/null 2>&1; then
+          # Query labels live so the bypass works on re-runs after adding the label.
+          labels=$(gh api "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels" --jq '.[].name')
+          if echo "$labels" | grep -qxF 'breaking-change-approved'; then
             echo "The 'breaking-change-approved' label is present — skipping guard."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
