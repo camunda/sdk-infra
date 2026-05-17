@@ -47,17 +47,22 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Setup Node.js
+        if: steps.bypass.outputs.skip != 'true'
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Install conventional-commits-parser
+        if: steps.bypass.outputs.skip != 'true'
+        run: npm install --no-save conventional-commits-parser
+
       - name: Check for breaking change commits
         if: steps.bypass.outputs.skip != 'true'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          found=0
-
-          echo "Scanning commits from $BASE_SHA to $HEAD_SHA for breaking change markers..."
-          echo ""
-
           commits=$(git rev-list "$BASE_SHA".."$HEAD_SHA") || {
             echo "::error::Failed to enumerate commits in range $BASE_SHA..$HEAD_SHA"
             exit 1
@@ -68,47 +73,72 @@ jobs:
             exit 0
           fi
 
-          while IFS= read -r sha; do
-            subject=$(git log -1 --format='%s' "$sha")
-            body=$(git log -1 --format='%b' "$sha")
+          echo "Scanning commits from $BASE_SHA to $HEAD_SHA for breaking change markers..."
+          echo ""
 
-            reasons=()
+          # Use the same parser that semantic-release uses to detect breaking changes.
+          node --input-type=module << 'SCRIPT'
+          import { execSync } from "node:child_process";
+          import conventionalCommitsParser from "conventional-commits-parser";
 
-            # Check for `!` after type/scope: feat!: ..., fix(scope)!: ..., FEAT!: ...
-            # Requires space after colon to match conventional-commits-parser.
-            # Accepts both lowercase and uppercase types (parser is case-insensitive on type).
-            if echo "$subject" | grep -qiE '^[a-z]+(\([^)]*\))?!: '; then
-              reasons+=("subject contains '!' marker: $subject")
-            fi
+          const baseSha = process.env.BASE_SHA;
+          const headSha = process.env.HEAD_SHA;
 
-            # Check for BREAKING CHANGE: or BREAKING-CHANGE: in body/footer.
-            # Case-sensitive to match conventional-commits-parser (uppercase only).
-            # Allows optional leading whitespace or list marker (* ) before the token.
-            if echo "$body" | grep -qE '(^|^[[:space:]]+|^\*[[:space:]]+)BREAKING[ -]CHANGE:'; then
-              reasons+=("body/footer contains BREAKING CHANGE marker")
-            fi
+          const shas = execSync(`git rev-list ${baseSha}..${headSha}`, { encoding: "utf8" })
+            .trim()
+            .split("\n")
+            .filter(Boolean);
 
-            if [ ${#reasons[@]} -gt 0 ]; then
-              found=1
-              echo "::error::Commit $sha will trigger a major version bump"
-              echo "  Subject: $subject"
-              for reason in "${reasons[@]}"; do
-                echo "  - $reason"
-              done
-              echo ""
-            fi
-          done <<< "$commits"
+          const offenders = [];
 
-          if [ "$found" -eq 1 ]; then
-            echo ""
-            echo "::error::This PR contains commits with breaking change markers that will trigger a major version bump."
-            echo ""
-            echo "If the breaking change is intentional, add the 'breaking-change-approved' label to this PR."
-            echo "Otherwise, rewrite the commit history to remove the markers before merging."
-            echo ""
-            echo "Common fix: use 'git rebase -i' to edit the offending commit(s) and remove"
-            echo "'BREAKING CHANGE:' from the body or '!' from the type (e.g., 'feat!:' → 'feat:')."
-            exit 1
-          fi
+          for (const sha of shas) {
+            const rawMessage = execSync(`git log -1 --format=%B ${sha}`, { encoding: "utf8" });
+            const parsed = conventionalCommitsParser.sync(rawMessage);
 
-          echo "No breaking change markers found."
+            const reasons = [];
+
+            // Check for ! after type/scope (bang notation)
+            const subject = rawMessage.split("\n")[0];
+            const bangMatch = subject.match(/^[a-zA-Z]+(\([^)]*\))?!:\s/);
+            if (bangMatch) {
+              reasons.push(`subject contains '!' marker: ${subject.trim()}`);
+            }
+
+            // Check for BREAKING CHANGE notes (parser handles all variants:
+            // leading whitespace, list markers, BREAKING-CHANGE, etc.)
+            if (parsed.notes && parsed.notes.length > 0) {
+              const breakingNotes = parsed.notes.filter(
+                (n) => n.title === "BREAKING CHANGE" || n.title === "BREAKING-CHANGE"
+              );
+              if (breakingNotes.length > 0) {
+                reasons.push("body/footer contains BREAKING CHANGE note");
+              }
+            }
+
+            if (reasons.length > 0) {
+              offenders.push({ sha, subject: subject.trim(), reasons });
+            }
+          }
+
+          if (offenders.length > 0) {
+            for (const { sha, subject, reasons } of offenders) {
+              console.log(`::error::Commit ${sha} will trigger a major version bump`);
+              console.log(`  Subject: ${subject}`);
+              for (const reason of reasons) {
+                console.log(`  - ${reason}`);
+              }
+              console.log("");
+            }
+            console.log("");
+            console.log("::error::This PR contains commits with breaking change markers that will trigger a major version bump.");
+            console.log("");
+            console.log("If the breaking change is intentional, add the 'breaking-change-approved' label to this PR.");
+            console.log("Otherwise, rewrite the commit history to remove the markers before merging.");
+            console.log("");
+            console.log("Common fix: use 'git rebase -i' to edit the offending commit(s) and remove");
+            console.log("'BREAKING CHANGE:' from the body or '!' from the type (e.g., 'feat!:' → 'feat:').");
+            process.exit(1);
+          }
+
+          console.log("No breaking change markers found.");
+          SCRIPT
