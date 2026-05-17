@@ -30,7 +30,7 @@ jobs:
         env:
           LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
         run: |
-          if echo "$LABELS" | grep -q 'breaking-change-approved'; then
+          if echo "$LABELS" | jq -e 'any(. == "breaking-change-approved")' > /dev/null 2>&1; then
             echo "The 'breaking-change-approved' label is present — skipping guard."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
@@ -60,12 +60,14 @@ jobs:
             reasons=()
 
             # Check for `!` after type/scope: feat!: ..., fix(scope)!: ...
-            if echo "$subject" | grep -qE '^[a-z]+(\([^)]*\))?!:'; then
+            # Requires space after colon to match conventional-commits-parser.
+            if echo "$subject" | grep -qE '^[a-z]+(\([^)]*\))?!: '; then
               reasons+=("subject contains '!' marker: $subject")
             fi
 
-            # Check for BREAKING CHANGE: or BREAKING-CHANGE: in body/footer
-            if echo "$body" | grep -qiE '^BREAKING[ -]CHANGE:'; then
+            # Check for BREAKING CHANGE: or BREAKING-CHANGE: in body/footer.
+            # Case-sensitive to match conventional-commits-parser (uppercase only).
+            if echo "$body" | grep -qE '^BREAKING[ -]CHANGE: '; then
               reasons+=("body/footer contains BREAKING CHANGE marker")
             fi
 
