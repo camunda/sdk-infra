@@ -53,6 +53,16 @@ jobs:
           echo "Scanning commits from $BASE_SHA to $HEAD_SHA for breaking change markers..."
           echo ""
 
+          commits=$(git rev-list "$BASE_SHA".."$HEAD_SHA") || {
+            echo "::error::Failed to enumerate commits in range $BASE_SHA..$HEAD_SHA"
+            exit 1
+          }
+
+          if [ -z "$commits" ]; then
+            echo "No commits found in range."
+            exit 0
+          fi
+
           while IFS= read -r sha; do
             subject=$(git log -1 --format='%s' "$sha")
             body=$(git log -1 --format='%b' "$sha")
@@ -67,7 +77,8 @@ jobs:
 
             # Check for BREAKING CHANGE: or BREAKING-CHANGE: in body/footer.
             # Case-sensitive to match conventional-commits-parser (uppercase only).
-            if echo "$body" | grep -qE '^BREAKING[ -]CHANGE:'; then
+            # Allows optional leading whitespace or list marker (* ) before the token.
+            if echo "$body" | grep -qE '(^|^[[:space:]]+|^\*[[:space:]]+)BREAKING[ -]CHANGE:'; then
               reasons+=("body/footer contains BREAKING CHANGE marker")
             fi
 
@@ -80,7 +91,7 @@ jobs:
               done
               echo ""
             fi
-          done < <(git rev-list "$BASE_SHA".."$HEAD_SHA")
+          done <<< "$commits"
 
           if [ "$found" -eq 1 ]; then
             echo ""
