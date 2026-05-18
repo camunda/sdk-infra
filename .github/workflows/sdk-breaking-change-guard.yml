@@ -1,0 +1,139 @@
+# Reusable workflow: Detect breaking change commits in a PR.
+#
+# Scans all PR commits for BREAKING CHANGE markers that would trigger
+# a major version bump via semantic-release. These markers are often
+# added by AI agents for intra-branch corrections and should be
+# removed before merging.
+#
+# Detected patterns (matching the angular preset used by semantic-release):
+#   - `BREAKING CHANGE:` in the commit body/footer
+#
+# Note: The hyphenated form `BREAKING-CHANGE:` and bang notation (`feat!:`)
+# are NOT detected because the shared release config uses the angular preset,
+# which only recognizes `BREAKING CHANGE` (with a space).
+#
+# Usage:
+#   jobs:
+#     breaking-change-guard:
+#       if: github.event_name == 'pull_request'
+#       uses: camunda/sdk-infra/.github/workflows/sdk-breaking-change-guard.yml@v1
+
+name: Breaking Change Guard
+
+on:
+  workflow_call:
+
+jobs:
+  breaking-change-guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Check for bypass label
+        id: bypass
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Query labels live so the bypass works on re-runs after adding the label.
+          labels=$(gh api --paginate "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels" --jq '.[].name')
+          if echo "$labels" | grep -qxF 'breaking-change-approved'; then
+            echo "The 'breaking-change-approved' label is present — skipping guard."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v6
+        if: steps.bypass.outputs.skip != 'true'
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        if: steps.bypass.outputs.skip != 'true'
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Install conventional-commits-parser
+        if: steps.bypass.outputs.skip != 'true'
+        run: npm install --no-save conventional-commits-parser@5
+
+      - name: Check for breaking change commits
+        if: steps.bypass.outputs.skip != 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          commits=$(git rev-list "$BASE_SHA".."$HEAD_SHA") || {
+            echo "::error::Failed to enumerate commits in range $BASE_SHA..$HEAD_SHA"
+            exit 1
+          }
+
+          if [ -z "$commits" ]; then
+            echo "No commits found in range."
+            exit 0
+          fi
+
+          echo "Scanning commits from $BASE_SHA to $HEAD_SHA for breaking change markers..."
+          echo ""
+
+          # Use the same parser that semantic-release uses to detect breaking changes.
+          node --input-type=module << 'SCRIPT'
+          import { execSync } from "node:child_process";
+          import { CommitParser } from "conventional-commits-parser";
+
+          const parser = new CommitParser({
+            noteKeywords: ["BREAKING CHANGE"],
+          });
+
+          const baseSha = process.env.BASE_SHA;
+          const headSha = process.env.HEAD_SHA;
+
+          const shas = execSync(`git rev-list ${baseSha}..${headSha}`, { encoding: "utf8" })
+            .trim()
+            .split("\n")
+            .filter(Boolean);
+
+          const offenders = [];
+
+          for (const sha of shas) {
+            const rawMessage = execSync(`git log -1 --format=%B ${sha}`, { encoding: "utf8" });
+            const parsed = parser.parse(rawMessage);
+            const subject = rawMessage.split("\n")[0].trim();
+
+            // Check for BREAKING CHANGE notes (the angular preset only
+            // recognizes "BREAKING CHANGE" with a space, not the hyphenated form).
+            if (parsed.notes && parsed.notes.length > 0) {
+              const breakingNotes = parsed.notes.filter(
+                (n) => n.title === "BREAKING CHANGE"
+              );
+              if (breakingNotes.length > 0) {
+                offenders.push({ sha, subject, reasons: ["body/footer contains BREAKING CHANGE note"] });
+              }
+            }
+          }
+
+          if (offenders.length > 0) {
+            for (const { sha, subject, reasons } of offenders) {
+              console.log(`::error::Commit ${sha} will trigger a major version bump`);
+              console.log(`  Subject: ${subject}`);
+              for (const reason of reasons) {
+                console.log(`  - ${reason}`);
+              }
+              console.log("");
+            }
+            console.log("");
+            console.log("::error::This PR contains commits with breaking change markers that will trigger a major version bump.");
+            console.log("");
+            console.log("If the breaking change is intentional, add the 'breaking-change-approved' label to this PR.");
+            console.log("Otherwise, rewrite the commit history to remove the markers before merging.");
+            console.log("");
+            console.log("Common fix: use 'git rebase -i' to edit the offending commit(s) and remove");
+            console.log("'BREAKING CHANGE:' from the body/footer.");
+            process.exit(1);
+          }
+
+          console.log("No breaking change markers found.");
+          SCRIPT
