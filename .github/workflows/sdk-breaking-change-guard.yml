@@ -55,7 +55,7 @@ jobs:
 
       - name: Install conventional-commits-parser
         if: steps.bypass.outputs.skip != 'true'
-        run: npm install --no-save conventional-commits-parser
+        run: npm install --no-save conventional-commits-parser@5
 
       - name: Check for breaking change commits
         if: steps.bypass.outputs.skip != 'true'
@@ -79,7 +79,11 @@ jobs:
           # Use the same parser that semantic-release uses to detect breaking changes.
           node --input-type=module << 'SCRIPT'
           import { execSync } from "node:child_process";
-          import conventionalCommitsParser from "conventional-commits-parser";
+          import { CommitParser } from "conventional-commits-parser";
+
+          const parser = new CommitParser({
+            noteKeywords: ["BREAKING CHANGE", "BREAKING-CHANGE"],
+          });
 
           const baseSha = process.env.BASE_SHA;
           const headSha = process.env.HEAD_SHA;
@@ -93,7 +97,7 @@ jobs:
 
           for (const sha of shas) {
             const rawMessage = execSync(`git log -1 --format=%B ${sha}`, { encoding: "utf8" });
-            const parsed = conventionalCommitsParser.sync(rawMessage);
+            const parsed = parser.parse(rawMessage);
 
             const reasons = [];
 
