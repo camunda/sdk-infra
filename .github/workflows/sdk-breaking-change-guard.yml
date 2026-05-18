@@ -82,12 +82,7 @@ jobs:
           # Use the same parser that semantic-release uses to detect breaking changes.
           node --input-type=module << 'SCRIPT'
           import { execSync } from "node:child_process";
-          import pkg from "conventional-commits-parser";
-          const { CommitParser } = pkg;
-
-          const parser = new CommitParser({
-            noteKeywords: ["BREAKING CHANGE"],
-          });
+          import parser from "conventional-commits-parser";
 
           const baseSha = process.env.BASE_SHA;
           const headSha = process.env.HEAD_SHA;
@@ -101,7 +96,7 @@ jobs:
 
           for (const sha of shas) {
             const rawMessage = execSync(`git log -1 --format=%B ${sha}`, { encoding: "utf8" });
-            const parsed = parser.parse(rawMessage);
+            const parsed = parser.sync(rawMessage, { noteKeywords: ["BREAKING CHANGE"] });
             const subject = rawMessage.split("\n")[0].trim();
 
             // Check for BREAKING CHANGE notes (the angular preset only
