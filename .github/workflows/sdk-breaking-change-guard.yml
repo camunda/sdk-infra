@@ -7,7 +7,10 @@
 #
 # Detected patterns (matching semantic-release / conventional-commits-parser):
 #   - `BREAKING CHANGE:` or `BREAKING-CHANGE:` in the commit body/footer
-#   - `!` after the type/scope (e.g., `feat!:`, `fix(scope)!:`)
+#
+# Note: Bang notation (`feat!:`) is NOT detected because the shared
+# release config uses the default angular preset, which does not treat
+# `!` headers as breaking changes.
 #
 # Usage:
 #   jobs:
@@ -98,15 +101,7 @@ jobs:
           for (const sha of shas) {
             const rawMessage = execSync(`git log -1 --format=%B ${sha}`, { encoding: "utf8" });
             const parsed = parser.parse(rawMessage);
-
-            const reasons = [];
-
-            // Check for ! after type/scope (bang notation)
-            const subject = rawMessage.split("\n")[0];
-            const bangMatch = subject.match(/^[a-zA-Z]+(\([^)]*\))?!:\s/);
-            if (bangMatch) {
-              reasons.push(`subject contains '!' marker: ${subject.trim()}`);
-            }
+            const subject = rawMessage.split("\n")[0].trim();
 
             // Check for BREAKING CHANGE notes (parser handles all variants:
             // leading whitespace, list markers, BREAKING-CHANGE, etc.)
@@ -115,12 +110,8 @@ jobs:
                 (n) => n.title === "BREAKING CHANGE" || n.title === "BREAKING-CHANGE"
               );
               if (breakingNotes.length > 0) {
-                reasons.push("body/footer contains BREAKING CHANGE note");
+                offenders.push({ sha, subject, reasons: ["body/footer contains BREAKING CHANGE note"] });
               }
-            }
-
-            if (reasons.length > 0) {
-              offenders.push({ sha, subject: subject.trim(), reasons });
             }
           }
 
@@ -140,7 +131,7 @@ jobs:
             console.log("Otherwise, rewrite the commit history to remove the markers before merging.");
             console.log("");
             console.log("Common fix: use 'git rebase -i' to edit the offending commit(s) and remove");
-            console.log("'BREAKING CHANGE:' from the body or '!' from the type (e.g., 'feat!:' → 'feat:').");
+            console.log("'BREAKING CHANGE:' or 'BREAKING-CHANGE:' from the body/footer.");
             process.exit(1);
           }
 
