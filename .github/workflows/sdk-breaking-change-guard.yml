@@ -5,12 +5,12 @@
 # added by AI agents for intra-branch corrections and should be
 # removed before merging.
 #
-# Detected patterns (matching semantic-release / conventional-commits-parser):
-#   - `BREAKING CHANGE:` or `BREAKING-CHANGE:` in the commit body/footer
+# Detected patterns (matching the angular preset used by semantic-release):
+#   - `BREAKING CHANGE:` in the commit body/footer
 #
-# Note: Bang notation (`feat!:`) is NOT detected because the shared
-# release config uses the default angular preset, which does not treat
-# `!` headers as breaking changes.
+# Note: The hyphenated form `BREAKING-CHANGE:` and bang notation (`feat!:`)
+# are NOT detected because the shared release config uses the angular preset,
+# which only recognizes `BREAKING CHANGE` (with a space).
 #
 # Usage:
 #   jobs:
@@ -85,7 +85,7 @@ jobs:
           import { CommitParser } from "conventional-commits-parser";
 
           const parser = new CommitParser({
-            noteKeywords: ["BREAKING CHANGE", "BREAKING-CHANGE"],
+            noteKeywords: ["BREAKING CHANGE"],
           });
 
           const baseSha = process.env.BASE_SHA;
@@ -103,11 +103,11 @@ jobs:
             const parsed = parser.parse(rawMessage);
             const subject = rawMessage.split("\n")[0].trim();
 
-            // Check for BREAKING CHANGE notes (parser handles all variants:
-            // leading whitespace, list markers, BREAKING-CHANGE, etc.)
+            // Check for BREAKING CHANGE notes (the angular preset only
+            // recognizes "BREAKING CHANGE" with a space, not the hyphenated form).
             if (parsed.notes && parsed.notes.length > 0) {
               const breakingNotes = parsed.notes.filter(
-                (n) => n.title === "BREAKING CHANGE" || n.title === "BREAKING-CHANGE"
+                (n) => n.title === "BREAKING CHANGE"
               );
               if (breakingNotes.length > 0) {
                 offenders.push({ sha, subject, reasons: ["body/footer contains BREAKING CHANGE note"] });
@@ -131,7 +131,7 @@ jobs:
             console.log("Otherwise, rewrite the commit history to remove the markers before merging.");
             console.log("");
             console.log("Common fix: use 'git rebase -i' to edit the offending commit(s) and remove");
-            console.log("'BREAKING CHANGE:' or 'BREAKING-CHANGE:' from the body/footer.");
+            console.log("'BREAKING CHANGE:' from the body/footer.");
             process.exit(1);
           }
 
