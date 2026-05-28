@@ -114,20 +114,11 @@ jobs:
     env:
       SLACK_WEBHOOK_URL: ${{ secrets.slack-webhook-url }}
     steps:
-      - name: Build mention prefix
-        id: mention
-        run: |
-          if [ -n "${{ inputs.mention-group }}" ]; then
-            echo "prefix=<!subteam^${{ inputs.mention-group }}> " >> $GITHUB_OUTPUT
-          else
-            echo "prefix=" >> $GITHUB_OUTPUT
-          fi
-
       - name: Build payload
         if: ${{ env.SLACK_WEBHOOK_URL != '' }}
         id: payload
         env:
-          MENTION_PREFIX: ${{ steps.mention.outputs.prefix }}
+          MENTION_GROUP: ${{ inputs.mention-group }}
           EVENT_TYPE: ${{ needs.classify.outputs.event-type }}
           REPO_NAME: ${{ inputs.repo-name }}
           AUTHOR: ${{ needs.classify.outputs.author }}
@@ -137,10 +128,28 @@ jobs:
           # Escape Slack mrkdwn control characters in the title to prevent
           # injection via contributor-controlled issue/PR titles.
           SAFE_TITLE=$(echo "$TITLE" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
+          # Build payload inside jq filter expressions where \n is interpreted
+          # as actual newlines (--arg treats \n as literal backslash-n).
+          # The <!subteam^ID> mention is also built inside jq to avoid shell
+          # escaping issues with <, >, and ! characters.
           PAYLOAD=$(jq -n \
-            --arg text "${MENTION_PREFIX}:busts_in_silhouette: New community ${EVENT_TYPE} on \`${REPO_NAME}\`" \
-            --arg body "${MENTION_PREFIX}:busts_in_silhouette: *New community ${EVENT_TYPE}*\n\n*Repo:* \`${REPO_NAME}\`\n*Author:* \`${AUTHOR}\`\n*Title:* <${URL}|${SAFE_TITLE}>" \
-            '{text: $text, blocks: [{type: "section", text: {type: "mrkdwn", text: $body}}]}')
+            --arg mention_group "$MENTION_GROUP" \
+            --arg event "$EVENT_TYPE" \
+            --arg repo "$REPO_NAME" \
+            --arg author "$AUTHOR" \
+            --arg title "$SAFE_TITLE" \
+            --arg url "$URL" \
+            '(if $mention_group != "" then "<!subteam^" + $mention_group + "> " else "" end) as $prefix |
+            {
+              text: ($prefix + ":busts_in_silhouette: New community " + $event + " on `" + $repo + "`"),
+              blocks: [{
+                type: "section",
+                text: {
+                  type: "mrkdwn",
+                  text: ($prefix + ":busts_in_silhouette: *New community " + $event + "*\n\n*Repo:* `" + $repo + "`\n*Author:* `" + $author + "`\n*Title:* <" + $url + "|" + $title + ">")
+                }
+              }]
+            }')
           echo "json<<ENDOFPAYLOAD" >> $GITHUB_OUTPUT
           echo "$PAYLOAD" >> $GITHUB_OUTPUT
           echo "ENDOFPAYLOAD" >> $GITHUB_OUTPUT
@@ -174,9 +183,19 @@ jobs:
           # injection via contributor-controlled PR titles.
           SAFE_TITLE=$(echo "$TITLE" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
           PAYLOAD=$(jq -n \
-            --arg text ":robot_face: Dependabot PR on \`${REPO_NAME}\`" \
-            --arg body ":robot_face: *Dependabot PR*\n\n*Repo:* \`${REPO_NAME}\`\n*Title:* <${URL}|${SAFE_TITLE}>" \
-            '{text: $text, blocks: [{type: "section", text: {type: "mrkdwn", text: $body}}]}')
+            --arg repo "$REPO_NAME" \
+            --arg title "$SAFE_TITLE" \
+            --arg url "$URL" \
+            '{
+              text: (":robot_face: Dependabot PR on `" + $repo + "`"),
+              blocks: [{
+                type: "section",
+                text: {
+                  type: "mrkdwn",
+                  text: (":robot_face: *Dependabot PR*\n\n*Repo:* `" + $repo + "`\n*Title:* <" + $url + "|" + $title + ">")
+                }
+              }]
+            }')
           echo "json<<ENDOFPAYLOAD" >> $GITHUB_OUTPUT
           echo "$PAYLOAD" >> $GITHUB_OUTPUT
           echo "ENDOFPAYLOAD" >> $GITHUB_OUTPUT
