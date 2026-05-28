@@ -134,9 +134,12 @@ jobs:
           TITLE: ${{ needs.classify.outputs.title }}
           URL: ${{ needs.classify.outputs.url }}
         run: |
+          # Escape Slack mrkdwn control characters in the title to prevent
+          # injection via contributor-controlled issue/PR titles.
+          SAFE_TITLE=$(echo "$TITLE" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
           PAYLOAD=$(jq -n \
             --arg text "${MENTION_PREFIX}:busts_in_silhouette: New community ${EVENT_TYPE} on \`${REPO_NAME}\`" \
-            --arg body "${MENTION_PREFIX}:busts_in_silhouette: *New community ${EVENT_TYPE}*\n\n*Repo:* \`${REPO_NAME}\`\n*Author:* \`${AUTHOR}\`\n*Title:* <${URL}|${TITLE}>" \
+            --arg body "${MENTION_PREFIX}:busts_in_silhouette: *New community ${EVENT_TYPE}*\n\n*Repo:* \`${REPO_NAME}\`\n*Author:* \`${AUTHOR}\`\n*Title:* <${URL}|${SAFE_TITLE}>" \
             '{text: $text, blocks: [{type: "section", text: {type: "mrkdwn", text: $body}}]}')
           echo "json<<ENDOFPAYLOAD" >> $GITHUB_OUTPUT
           echo "$PAYLOAD" >> $GITHUB_OUTPUT
@@ -167,9 +170,12 @@ jobs:
           TITLE: ${{ needs.classify.outputs.title }}
           URL: ${{ needs.classify.outputs.url }}
         run: |
+          # Escape Slack mrkdwn control characters in the title to prevent
+          # injection via contributor-controlled PR titles.
+          SAFE_TITLE=$(echo "$TITLE" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
           PAYLOAD=$(jq -n \
             --arg text ":robot_face: Dependabot PR on \`${REPO_NAME}\`" \
-            --arg body ":robot_face: *Dependabot PR*\n\n*Repo:* \`${REPO_NAME}\`\n*Title:* <${URL}|${TITLE}>" \
+            --arg body ":robot_face: *Dependabot PR*\n\n*Repo:* \`${REPO_NAME}\`\n*Title:* <${URL}|${SAFE_TITLE}>" \
             '{text: $text, blocks: [{type: "section", text: {type: "mrkdwn", text: $body}}]}')
           echo "json<<ENDOFPAYLOAD" >> $GITHUB_OUTPUT
           echo "$PAYLOAD" >> $GITHUB_OUTPUT
