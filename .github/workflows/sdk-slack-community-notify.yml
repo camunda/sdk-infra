@@ -46,6 +46,7 @@ jobs:
   classify:
     runs-on: ubuntu-latest
     timeout-minutes: 2
+    permissions: {}
     outputs:
       category: ${{ steps.classify.outputs.category }}
       title: ${{ steps.classify.outputs.title }}
@@ -109,6 +110,7 @@ jobs:
     if: needs.classify.outputs.category == 'community'
     runs-on: ubuntu-latest
     timeout-minutes: 2
+    permissions: {}
     env:
       SLACK_WEBHOOK_URL: ${{ secrets.slack-webhook-url }}
     steps:
@@ -121,55 +123,62 @@ jobs:
             echo "prefix=" >> $GITHUB_OUTPUT
           fi
 
-      - name: Send community notification
+      - name: Build payload
         if: ${{ env.SLACK_WEBHOOK_URL != '' }}
+        id: payload
         env:
+          MENTION_PREFIX: ${{ steps.mention.outputs.prefix }}
           EVENT_TYPE: ${{ needs.classify.outputs.event-type }}
+          REPO_NAME: ${{ inputs.repo-name }}
+          AUTHOR: ${{ needs.classify.outputs.author }}
           TITLE: ${{ needs.classify.outputs.title }}
           URL: ${{ needs.classify.outputs.url }}
-          AUTHOR: ${{ needs.classify.outputs.author }}
+        run: |
+          PAYLOAD=$(jq -n \
+            --arg text "${MENTION_PREFIX}:busts_in_silhouette: New community ${EVENT_TYPE} on \`${REPO_NAME}\`" \
+            --arg body "${MENTION_PREFIX}:busts_in_silhouette: *New community ${EVENT_TYPE}*\n\n*Repo:* \`${REPO_NAME}\`\n*Author:* \`${AUTHOR}\`\n*Title:* <${URL}|${TITLE}>" \
+            '{text: $text, blocks: [{type: "section", text: {type: "mrkdwn", text: $body}}]}')
+          echo "json<<ENDOFPAYLOAD" >> $GITHUB_OUTPUT
+          echo "$PAYLOAD" >> $GITHUB_OUTPUT
+          echo "ENDOFPAYLOAD" >> $GITHUB_OUTPUT
+
+      - name: Send community notification
+        if: ${{ env.SLACK_WEBHOOK_URL != '' }}
         uses: slackapi/slack-github-action@v3.0.2
         with:
           webhook: ${{ secrets.slack-webhook-url }}
           webhook-type: incoming-webhook
-          payload: |
-            {
-              "text": "${{ steps.mention.outputs.prefix }}:busts_in_silhouette: New community ${{ needs.classify.outputs.event-type }} on `${{ inputs.repo-name }}`",
-              "blocks": [
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": "${{ steps.mention.outputs.prefix }}:busts_in_silhouette: *New community ${{ needs.classify.outputs.event-type }}*\n\n*Repo:* `${{ inputs.repo-name }}`\n*Author:* `${{ needs.classify.outputs.author }}`\n*Title:* <${{ needs.classify.outputs.url }}|${{ needs.classify.outputs.title }}>"
-                  }
-                }
-              ]
-            }
+          payload: ${{ steps.payload.outputs.json }}
 
   notify-dependabot:
     needs: classify
     if: needs.classify.outputs.category == 'dependabot'
     runs-on: ubuntu-latest
     timeout-minutes: 2
+    permissions: {}
     env:
       SLACK_WEBHOOK_URL: ${{ secrets.slack-webhook-url }}
     steps:
+      - name: Build payload
+        if: ${{ env.SLACK_WEBHOOK_URL != '' }}
+        id: payload
+        env:
+          REPO_NAME: ${{ inputs.repo-name }}
+          TITLE: ${{ needs.classify.outputs.title }}
+          URL: ${{ needs.classify.outputs.url }}
+        run: |
+          PAYLOAD=$(jq -n \
+            --arg text ":robot_face: Dependabot PR on \`${REPO_NAME}\`" \
+            --arg body ":robot_face: *Dependabot PR*\n\n*Repo:* \`${REPO_NAME}\`\n*Title:* <${URL}|${TITLE}>" \
+            '{text: $text, blocks: [{type: "section", text: {type: "mrkdwn", text: $body}}]}')
+          echo "json<<ENDOFPAYLOAD" >> $GITHUB_OUTPUT
+          echo "$PAYLOAD" >> $GITHUB_OUTPUT
+          echo "ENDOFPAYLOAD" >> $GITHUB_OUTPUT
+
       - name: Send Dependabot notification
         if: ${{ env.SLACK_WEBHOOK_URL != '' }}
         uses: slackapi/slack-github-action@v3.0.2
         with:
           webhook: ${{ secrets.slack-webhook-url }}
           webhook-type: incoming-webhook
-          payload: |
-            {
-              "text": ":dependabot: Dependabot PR on `${{ inputs.repo-name }}`",
-              "blocks": [
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": ":robot_face: *Dependabot PR*\n\n*Repo:* `${{ inputs.repo-name }}`\n*Title:* <${{ needs.classify.outputs.url }}|${{ needs.classify.outputs.title }}>"
-                  }
-                }
-              ]
-            }
+          payload: ${{ steps.payload.outputs.json }}
