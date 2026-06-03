@@ -1,11 +1,19 @@
 # Reusable workflow: Notify Slack about community issues/PRs and Dependabot PRs.
 #
 # Called by SDK repos on `issues: [opened]` and `pull_request_target: [opened]`.
-# Classifies the event by author association:
+# Classifies the event by author association and org membership:
 #
 #   - Community (non-member, non-bot): urgent notification with @group mention
 #   - Dependabot: non-urgent notification (no @mention)
-#   - Maintainer/collaborator: skipped (no notification)
+#   - Maintainer/collaborator/org member: skipped (no notification)
+#
+# Note: GitHub's author_association field can return CONTRIBUTOR instead of
+# MEMBER for org members who have base-permission-only access (not added to
+# a team or as a direct collaborator). To handle this, the classify step
+# performs a secondary org membership check via the GitHub API when
+# author_association is not OWNER/MEMBER/COLLABORATOR. This check uses the
+# unauthenticated public-members endpoint and only works when org membership
+# is public. For private memberships, add the user to a repo team.
 #
 # Usage:
 #   on:
@@ -100,26 +108,43 @@ jobs:
           ASSOC="${INPUT_ASSOC:-$EVENT_ASSOC}"
           echo "::debug::author_association input='$INPUT_ASSOC' event='$EVENT_ASSOC' resolved='$ASSOC' actor='$ACTOR'"
 
+          # --- Determine category ---
+          CATEGORY="unknown"
+
           # Dependabot
           if [ "$ACTOR" = "dependabot[bot]" ]; then
-            echo "category=dependabot" >> $GITHUB_OUTPUT
-            exit 0
+            CATEGORY="dependabot"
           fi
 
           # Skip other bots
-          case "$ACTOR" in
-            *\[bot\]) echo "category=skip" >> $GITHUB_OUTPUT; exit 0 ;;
-          esac
+          if [ "$CATEGORY" = "unknown" ]; then
+            case "$ACTOR" in
+              *\[bot\]) CATEGORY="skip" ;;
+            esac
+          fi
 
           # Maintainers / collaborators — no notification
-          case "$ASSOC" in
-            OWNER|MEMBER|COLLABORATOR)
-              echo "category=skip" >> $GITHUB_OUTPUT
-              ;;
-            *)
-              echo "category=community" >> $GITHUB_OUTPUT
-              ;;
-          esac
+          if [ "$CATEGORY" = "unknown" ]; then
+            case "$ASSOC" in
+              OWNER|MEMBER|COLLABORATOR) CATEGORY="skip" ;;
+              *) CATEGORY="community" ;;
+            esac
+          fi
+
+          # Secondary check: GitHub can return CONTRIBUTOR instead of MEMBER
+          # for org members with base-permission-only access (no team).
+          # Check the public org membership API (unauthenticated, no token needed).
+          if [ "$CATEGORY" = "community" ]; then
+            ORG="${GITHUB_REPOSITORY_OWNER}"
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
+              "https://api.github.com/orgs/${ORG}/public_members/${ACTOR}" 2>/dev/null || echo "000")
+            if [ "$HTTP_CODE" = "204" ]; then
+              echo "::notice::${ACTOR} is a public member of ${ORG} (author_association=${ASSOC}); skipping notification"
+              CATEGORY="skip"
+            fi
+          fi
+
+          echo "category=$CATEGORY" >> $GITHUB_OUTPUT
 
   notify-community:
     needs: classify
