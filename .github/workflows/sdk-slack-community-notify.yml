@@ -20,6 +20,7 @@
 #       with:
 #         repo-name: orchestration-cluster-api-python
 #         mention-group: ${{ vars.SLACK_MENTION_GROUP }}
+#         author-association: ${{ github.event.pull_request.author_association || github.event.issue.author_association }}
 #       secrets:
 #         slack-webhook-url: ${{ secrets.SLACK_SDK_ALERTS }}
 
@@ -34,6 +35,14 @@ on:
         type: string
       mention-group:
         description: 'Slack group/subteam ID to @mention for community items (e.g. S07XXXXXXXX). Empty = no mention.'
+        required: false
+        default: ''
+        type: string
+      author-association:
+        description: >-
+          The author_association value from the caller event context
+          (e.g. MEMBER, COLLABORATOR, NONE). Passed explicitly because
+          reusable workflows may not reliably inherit all event fields.
         required: false
         default: ''
         type: string
@@ -59,6 +68,9 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           ACTOR: ${{ github.actor }}
+          # Explicit input from caller (preferred — avoids reusable workflow
+          # context-inheritance edge cases with author_association)
+          INPUT_ASSOC: ${{ inputs.author-association }}
           # Issue fields
           ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_URL: ${{ github.event.issue.html_url }}
@@ -75,14 +87,18 @@ jobs:
             echo "title=$ISSUE_TITLE" >> $GITHUB_OUTPUT
             echo "url=$ISSUE_URL" >> $GITHUB_OUTPUT
             echo "author=$ISSUE_AUTHOR" >> $GITHUB_OUTPUT
-            ASSOC="$ISSUE_ASSOC"
+            EVENT_ASSOC="$ISSUE_ASSOC"
           else
             echo "event_type=pr" >> $GITHUB_OUTPUT
             echo "title=$PR_TITLE" >> $GITHUB_OUTPUT
             echo "url=$PR_URL" >> $GITHUB_OUTPUT
             echo "author=$PR_AUTHOR" >> $GITHUB_OUTPUT
-            ASSOC="$PR_ASSOC"
+            EVENT_ASSOC="$PR_ASSOC"
           fi
+
+          # Prefer explicit input; fall back to event context
+          ASSOC="${INPUT_ASSOC:-$EVENT_ASSOC}"
+          echo "::debug::author_association input='$INPUT_ASSOC' event='$EVENT_ASSOC' resolved='$ASSOC' actor='$ACTOR'"
 
           # Dependabot
           if [ "$ACTOR" = "dependabot[bot]" ]; then
