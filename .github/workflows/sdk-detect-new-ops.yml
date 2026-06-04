@@ -134,8 +134,8 @@ jobs:
           roleId: ${{ secrets.vault-role-id }}
           secretId: ${{ secrets.vault-secret-id }}
           secrets: |
-            secret/data/products/onboarding-and-migration/github.com/apps/camunda/camunda-sdk-automation app_id;
-            secret/data/products/onboarding-and-migration/github.com/apps/camunda/camunda-sdk-automation private_key;
+            secret/data/products/onboarding-and-migration/github.com/apps/camunda/camunda-sdk-automation GITHUB_APP_ID;
+            secret/data/products/onboarding-and-migration/github.com/apps/camunda/camunda-sdk-automation GITHUB_APP_SECRET;
           exportEnv: true
 
       - name: Generate GitHub App token
@@ -143,8 +143,8 @@ jobs:
         if: steps.vault-secrets.outcome == 'success'
         uses: tibdex/github-app-token@3beb63f4bd073e61482598c45c71c1019b59b73a # v2.1.0
         with:
-          app_id: ${{ env.app_id }}
-          private_key: ${{ env.private_key }}
+          app_id: ${{ env.GITHUB_APP_ID }}
+          private_key: ${{ env.GITHUB_APP_SECRET }}
 
       - name: Open tracking issues
         if: steps.diff.outputs.uncovered != '[]' && steps.diff.outputs.uncovered != ''
