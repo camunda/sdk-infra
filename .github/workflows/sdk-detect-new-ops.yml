@@ -5,7 +5,7 @@
 #
 # Creates:
 #   - A summary issue in the calling repo with the full cross-SDK coverage table
-#   - Per-SDK issues in each repo that has missing coverage (requires sdk-issue-token)
+#   - Per-SDK issues in each repo that has missing coverage (requires vault secrets)
 #   - All issues link to each other for traceability
 #
 # Usage:
@@ -16,7 +16,9 @@
 #       with:
 #         spec-artifact: bundled-spec
 #       secrets:
-#         sdk-issue-token: ${{ secrets.SDK_ISSUE_TOKEN }}
+#         vault-addr: ${{ secrets.VAULT_ADDR }}
+#         vault-role-id: ${{ secrets.VAULT_ROLE_ID }}
+#         vault-secret-id: ${{ secrets.VAULT_SECRET_ID }}
 
 name: Detect New Operations
 
@@ -30,7 +32,16 @@ on:
         type: string
     secrets:
       sdk-issue-token:
-        description: 'Token with issues:write on SDK repos for cross-repo issue creation. Optional — if not provided, only the summary issue is created.'
+        description: 'DEPRECATED — use vault secrets instead. Token with issues:write on SDK repos for cross-repo issue creation.'
+        required: false
+      vault-addr:
+        description: 'Vault server URL'
+        required: false
+      vault-role-id:
+        description: 'Vault AppRole role ID'
+        required: false
+      vault-secret-id:
+        description: 'Vault AppRole secret ID'
         required: false
     outputs:
       new-operations:
@@ -112,11 +123,34 @@ jobs:
           "
           echo "uncovered=$(cat /tmp/uncovered.json)" >> $GITHUB_OUTPUT
 
+      - name: Import Vault secrets
+        id: vault-secrets
+        if: steps.diff.outputs.uncovered != '[]' && steps.diff.outputs.uncovered != ''
+        uses: hashicorp/vault-action@892a26828f195e65540a40b4768ae4571f51ebfc # v4.0.0
+        continue-on-error: true
+        with:
+          url: ${{ secrets.vault-addr }}
+          method: approle
+          roleId: ${{ secrets.vault-role-id }}
+          secretId: ${{ secrets.vault-secret-id }}
+          secrets: |
+            secret/data/products/onboarding-and-migration/github.com/apps/camunda/camunda-sdk-automation app_id;
+            secret/data/products/onboarding-and-migration/github.com/apps/camunda/camunda-sdk-automation private_key;
+          exportEnv: true
+
+      - name: Generate GitHub App token
+        id: app-token
+        if: steps.vault-secrets.outcome == 'success'
+        uses: tibdex/github-app-token@3beb63f4bd073e61482598c45c71c1019b59b73a # v2.1.0
+        with:
+          app_id: ${{ env.app_id }}
+          private_key: ${{ env.private_key }}
+
       - name: Open tracking issues
         if: steps.diff.outputs.uncovered != '[]' && steps.diff.outputs.uncovered != ''
         uses: actions/github-script@v7
         env:
-          SDK_ISSUE_TOKEN: ${{ secrets.sdk-issue-token }}
+          SDK_ISSUE_TOKEN: ${{ steps.app-token.outputs.token || secrets.sdk-issue-token }}
         with:
           script: |
             // Check for existing open summary issue first

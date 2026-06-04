@@ -10,10 +10,14 @@
 # Note: GitHub's author_association field can return CONTRIBUTOR instead of
 # MEMBER for org members who have base-permission-only access (not added to
 # a team or as a direct collaborator). To handle this, the classify step
-# performs a secondary org membership check via the GitHub API when
-# author_association is not OWNER/MEMBER/COLLABORATOR. This check uses the
-# unauthenticated public-members endpoint and only works when org membership
-# is public. For private memberships, add the user to a repo team.
+# generates a GitHub App token (via Vault) and checks the authenticated
+# /orgs/{org}/members/{username} endpoint, which detects both public and
+# private org memberships.
+#
+# Prerequisites:
+#   - Repos must be onboarded to Vault (infra-core)
+#   - The camunda-sdk-automation GitHub App must be installed on the repo
+#     with Organization Members: read permission
 #
 # Usage:
 #   on:
@@ -31,6 +35,9 @@
 #         author-association: ${{ github.event.pull_request.author_association || github.event.issue.author_association }}
 #       secrets:
 #         slack-webhook-url: ${{ secrets.SLACK_SDK_ALERTS }}
+#         vault-addr: ${{ secrets.VAULT_ADDR }}
+#         vault-role-id: ${{ secrets.VAULT_ROLE_ID }}
+#         vault-secret-id: ${{ secrets.VAULT_SECRET_ID }}
 
 name: Slack Community Notification
 
@@ -58,6 +65,15 @@ on:
       slack-webhook-url:
         description: 'Slack Incoming Webhook URL'
         required: false
+      vault-addr:
+        description: 'Vault server URL'
+        required: false
+      vault-role-id:
+        description: 'Vault AppRole role ID'
+        required: false
+      vault-secret-id:
+        description: 'Vault AppRole secret ID'
+        required: false
 
 jobs:
   classify:
@@ -71,11 +87,34 @@ jobs:
       author: ${{ steps.classify.outputs.author }}
       event-type: ${{ steps.classify.outputs.event_type }}
     steps:
+      - name: Import Vault secrets
+        id: secrets
+        uses: hashicorp/vault-action@892a26828f195e65540a40b4768ae4571f51ebfc # v4.0.0
+        continue-on-error: true
+        with:
+          url: ${{ secrets.vault-addr }}
+          method: approle
+          roleId: ${{ secrets.vault-role-id }}
+          secretId: ${{ secrets.vault-secret-id }}
+          secrets: |
+            secret/data/products/onboarding-and-migration/github.com/apps/camunda/camunda-sdk-automation app_id;
+            secret/data/products/onboarding-and-migration/github.com/apps/camunda/camunda-sdk-automation private_key;
+          exportEnv: true
+
+      - name: Generate GitHub App token
+        id: app-token
+        if: steps.secrets.outcome == 'success'
+        uses: tibdex/github-app-token@3beb63f4bd073e61482598c45c71c1019b59b73a # v2.1.0
+        with:
+          app_id: ${{ env.app_id }}
+          private_key: ${{ env.private_key }}
+
       - name: Classify event
         id: classify
         env:
           EVENT_NAME: ${{ github.event_name }}
           ACTOR: ${{ github.actor }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
           # Explicit input from caller (preferred — avoids reusable workflow
           # context-inheritance edge cases with author_association)
           INPUT_ASSOC: ${{ inputs.author-association }}
@@ -133,13 +172,17 @@ jobs:
 
           # Secondary check: GitHub can return CONTRIBUTOR instead of MEMBER
           # for org members with base-permission-only access (no team).
-          # Check the public org membership API (unauthenticated, no token needed).
-          if [ "$CATEGORY" = "community" ]; then
+          # Use the authenticated /orgs/{org}/members/{username} endpoint
+          # (requires read:org via the GitHub App token) to detect both
+          # public and private org memberships.
+          if [ "$CATEGORY" = "community" ] && [ -n "$APP_TOKEN" ]; then
             ORG="${GITHUB_REPOSITORY_OWNER}"
             HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
-              "https://api.github.com/orgs/${ORG}/public_members/${ACTOR}" 2>/dev/null || echo "000")
+              -H "Authorization: Bearer $APP_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/orgs/${ORG}/members/${ACTOR}" 2>/dev/null || echo "000")
             if [ "$HTTP_CODE" = "204" ]; then
-              echo "::notice::${ACTOR} is a public member of ${ORG} (author_association=${ASSOC}); skipping notification"
+              echo "::notice::${ACTOR} is a member of ${ORG} (author_association=${ASSOC}); skipping notification"
               CATEGORY="skip"
             fi
           fi

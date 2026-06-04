@@ -6,7 +6,7 @@
 #
 # Creates:
 #   - A summary issue in sdk-infra with the full cross-SDK coverage table
-#   - Per-SDK issues in each repo that has missing coverage (requires SDK_ISSUE_TOKEN secret)
+#   - Per-SDK issues in each repo that has missing coverage (requires Vault secrets)
 #   - All issues link to each other for traceability
 #
 # Runs daily at 07:00 UTC (weekdays). Can also be triggered manually.
@@ -119,6 +119,32 @@ jobs:
             });
             core.setOutput('has_open', issues.length > 0 ? 'true' : 'false');
 
+      - name: Import Vault secrets
+        id: vault-secrets
+        if: >
+          steps.diff.outputs.uncovered != '[]' &&
+          steps.diff.outputs.uncovered != '' &&
+          steps.existing.outputs.has_open != 'true'
+        uses: hashicorp/vault-action@892a26828f195e65540a40b4768ae4571f51ebfc # v4.0.0
+        continue-on-error: true
+        with:
+          url: ${{ secrets.VAULT_ADDR }}
+          method: approle
+          roleId: ${{ secrets.VAULT_ROLE_ID }}
+          secretId: ${{ secrets.VAULT_SECRET_ID }}
+          secrets: |
+            secret/data/products/onboarding-and-migration/github.com/apps/camunda/camunda-sdk-automation app_id;
+            secret/data/products/onboarding-and-migration/github.com/apps/camunda/camunda-sdk-automation private_key;
+          exportEnv: true
+
+      - name: Generate GitHub App token
+        id: app-token
+        if: steps.vault-secrets.outcome == 'success'
+        uses: tibdex/github-app-token@3beb63f4bd073e61482598c45c71c1019b59b73a # v2.1.0
+        with:
+          app_id: ${{ env.app_id }}
+          private_key: ${{ env.private_key }}
+
       - name: Open tracking issues
         if: >
           steps.diff.outputs.uncovered != '[]' &&
@@ -126,7 +152,7 @@ jobs:
           steps.existing.outputs.has_open != 'true'
         uses: actions/github-script@v7
         env:
-          SDK_ISSUE_TOKEN: ${{ secrets.SDK_ISSUE_TOKEN }}
+          SDK_ISSUE_TOKEN: ${{ steps.app-token.outputs.token || secrets.SDK_ISSUE_TOKEN }}
         with:
           script: |
             const uncovered = JSON.parse('${{ steps.diff.outputs.uncovered }}');
