@@ -98,7 +98,7 @@ jobs:
           secretId: ${{ secrets.vault-secret-id }}
           secrets: |
             secret/data/products/onboarding-and-migration/github.com/apps/camunda/camunda-sdk-automation GITHUB_APP_ID;
-            secret/data/products/onboarding-and-migration/github.com/apps/camunda/camunda-sdk-automation GITHUB_APP_SECRET;
+            secret/data/products/onboarding-and-migration/github.com/apps/camunda/camunda-sdk-automation GITHUB_APP_PRIVATE_KEY;
           exportEnv: true
 
       - name: Generate GitHub App token
@@ -107,7 +107,7 @@ jobs:
         uses: tibdex/github-app-token@3beb63f4bd073e61482598c45c71c1019b59b73a # v2.1.0
         with:
           app_id: ${{ env.GITHUB_APP_ID }}
-          private_key: ${{ env.GITHUB_APP_SECRET }}
+          private_key: ${{ env.GITHUB_APP_PRIVATE_KEY }}
 
       - name: Classify event
         id: classify
