@@ -169,15 +169,17 @@ jobs:
               console.log('No SDK token — reconciling the summary issue only (per-SDK issues left untouched).');
             }
 
-            // First open issue carrying the new-operations label, or null.
-            async function findOpenIssue(octokit, repo) {
+            // First open issue (not PR) carrying the new-operations label, or null.
+            async function findOpenIssue(octokit, owner, repo) {
               const { data } = await octokit.rest.issues.listForRepo({
                 owner, repo, labels: 'new-operations', state: 'open',
               });
-              return data.length ? data[0] : null;
+              // listForRepo also returns PRs that carry the label; exclude them.
+              const issuesOnly = data.filter(i => !i.pull_request);
+              return issuesOnly.length ? issuesOnly[0] : null;
             }
 
-            async function closeWithComment(octokit, repo, issue, comment) {
+            async function closeWithComment(octokit, owner, repo, issue, comment) {
               await octokit.rest.issues.createComment({
                 owner, repo, issue_number: issue.number, body: comment,
               });
@@ -195,7 +197,7 @@ jobs:
                 const missing = uncovered.filter(op => !op[sdk.field]);
                 let existing;
                 try {
-                  existing = await findOpenIssue(sdkOctokit, sdk.repo);
+                  existing = await findOpenIssue(sdkOctokit, owner, sdk.repo);
                 } catch (e) {
                   console.log(`${sdk.label}: failed to list issues: ${e.message}`);
                   continue;
@@ -205,7 +207,7 @@ jobs:
                 if (!missing.length) {
                   if (existing) {
                     try {
-                      await closeWithComment(sdkOctokit, sdk.repo, existing,
+                      await closeWithComment(sdkOctokit, owner, sdk.repo, existing,
                         'All listed operations now have example coverage — closing automatically.');
                       console.log(`${sdk.label}: coverage complete — closed ${existing.html_url}`);
                     } catch (e) {
@@ -267,7 +269,7 @@ jobs:
             // --- Summary issue in sdk-infra (default repo token) ---
             let summary;
             try {
-              summary = await findOpenIssue(github, context.repo.repo);
+              summary = await findOpenIssue(github, context.repo.owner, context.repo.repo);
             } catch (e) {
               summary = null;
               console.log(`Failed to list summary issues: ${e.message}`);
@@ -276,7 +278,7 @@ jobs:
             // No gaps anywhere: close the summary if one is open, then stop.
             if (!uncovered.length) {
               if (summary) {
-                await closeWithComment(github, context.repo.repo, summary,
+                await closeWithComment(github, context.repo.owner, context.repo.repo, summary,
                   'All operations now have SDK example coverage across JS, Python, and C# — closing automatically.');
                 console.log(`Summary issue: coverage complete — closed ${summary.html_url}`);
               } else {
