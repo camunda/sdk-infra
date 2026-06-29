@@ -184,6 +184,9 @@ jobs:
             async function findOpenIssue(octokit, owner, repo, { labels = 'new-operations', excludeLabel } = {}) {
               const { data } = await octokit.rest.issues.listForRepo({
                 owner, repo, labels, state: 'open',
+                // Page past the default 30 and sort deterministically so that, if
+                // duplicate tracking issues ever exist, we always act on the oldest.
+                per_page: 100, sort: 'created', direction: 'asc',
               });
               return data.find(i =>
                 !i.pull_request &&
