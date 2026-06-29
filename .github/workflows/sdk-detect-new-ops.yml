@@ -52,6 +52,11 @@ jobs:
   detect:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # The summary issue in the calling repo is managed with the default
+    # GITHUB_TOKEN, which requires issues:write; the caller must grant it.
+    permissions:
+      contents: read
+      issues: write
     outputs:
       uncovered: ${{ steps.diff.outputs.uncovered }}
     steps:
@@ -132,10 +137,10 @@ jobs:
         uses: hashicorp/vault-action@892a26828f195e65540a40b4768ae4571f51ebfc # v4.0.0
         continue-on-error: true
         with:
-          url: ${{ secrets.vault-addr }}
+          url: ${{ secrets['vault-addr'] }}
           method: approle
-          roleId: ${{ secrets.vault-role-id }}
-          secretId: ${{ secrets.vault-secret-id }}
+          roleId: ${{ secrets['vault-role-id'] }}
+          secretId: ${{ secrets['vault-secret-id'] }}
           secrets: |
             secret/data/products/onboarding-and-migration/github.com/apps/camunda/camunda-sdk-automation GITHUB_APP_ID;
             secret/data/products/onboarding-and-migration/github.com/apps/camunda/camunda-sdk-automation GITHUB_APP_PRIVATE_KEY;
@@ -156,7 +161,7 @@ jobs:
       - name: Reconcile tracking issues
         uses: actions/github-script@v7
         env:
-          SDK_ISSUE_TOKEN: ${{ steps.app-token.outputs.token || secrets.sdk-issue-token }}
+          SDK_ISSUE_TOKEN: ${{ steps.app-token.outputs.token || secrets['sdk-issue-token'] }}
           UNCOVERED: ${{ steps.diff.outputs.uncovered }}
         with:
           script: |
@@ -296,9 +301,13 @@ jobs:
             // No gaps anywhere: close the summary if one is open, then stop.
             if (!uncovered.length) {
               if (summary) {
-                await closeWithComment(github, context.repo.owner, context.repo.repo, summary,
-                  'All operations now have SDK example coverage across JS, Python, and C# — closing automatically.');
-                console.log(`Summary issue: coverage complete — closed ${summary.html_url}`);
+                try {
+                  await closeWithComment(github, context.repo.owner, context.repo.repo, summary,
+                    'All operations now have SDK example coverage across JS, Python, and C# — closing automatically.');
+                  console.log(`Summary issue: coverage complete — closed ${summary.html_url}`);
+                } catch (e) {
+                  console.log(`Summary issue: failed to close ${summary.html_url}: ${e.message}`);
+                }
               } else {
                 console.log('No coverage gaps and no open summary issue — nothing to do.');
               }

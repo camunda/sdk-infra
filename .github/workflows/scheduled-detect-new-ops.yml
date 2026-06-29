@@ -18,6 +18,13 @@ on:
     - cron: '0 7 * * 1-5' # 07:00 UTC, Monday–Friday
   workflow_dispatch: {} # Allow manual trigger
 
+# The summary issue in this repo is created/updated/closed with the default
+# GITHUB_TOKEN, which requires issues:write. Declared explicitly so the workflow
+# still works under read-only default token settings.
+permissions:
+  contents: read
+  issues: write
+
 jobs:
   detect:
     runs-on: ubuntu-latest
@@ -278,9 +285,13 @@ jobs:
             // No gaps anywhere: close the summary if one is open, then stop.
             if (!uncovered.length) {
               if (summary) {
-                await closeWithComment(github, context.repo.owner, context.repo.repo, summary,
-                  'All operations now have SDK example coverage across JS, Python, and C# — closing automatically.');
-                console.log(`Summary issue: coverage complete — closed ${summary.html_url}`);
+                try {
+                  await closeWithComment(github, context.repo.owner, context.repo.repo, summary,
+                    'All operations now have SDK example coverage across JS, Python, and C# — closing automatically.');
+                  console.log(`Summary issue: coverage complete — closed ${summary.html_url}`);
+                } catch (e) {
+                  console.log(`Summary issue: failed to close ${summary.html_url}: ${e.message}`);
+                }
               } else {
                 console.log('No coverage gaps and no open summary issue — nothing to do.');
               }
