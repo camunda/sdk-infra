@@ -192,14 +192,19 @@ jobs:
               console.log('No SDK token — reconciling the summary issue only (per-SDK issues left untouched).');
             }
 
-            // First open issue (not PR) carrying the new-operations label, or null.
-            async function findOpenIssue(octokit, owner, repo) {
+            // First open issue (not PR) matching the label query, or null.
+            // `labels` is a comma-separated AND filter; `excludeLabel` drops issues
+            // that also carry that label. This keeps per-SDK issues (new-operations)
+            // and the summary (new-operations + sdk-coverage) distinct even when both
+            // live in the same repo — e.g. the reusable workflow called from an SDK repo.
+            async function findOpenIssue(octokit, owner, repo, { labels = 'new-operations', excludeLabel } = {}) {
               const { data } = await octokit.rest.issues.listForRepo({
-                owner, repo, labels: 'new-operations', state: 'open',
+                owner, repo, labels, state: 'open',
               });
-              // listForRepo also returns PRs that carry the label; exclude them.
-              const issuesOnly = data.filter(i => !i.pull_request);
-              return issuesOnly.length ? issuesOnly[0] : null;
+              return data.find(i =>
+                !i.pull_request &&
+                (!excludeLabel || !i.labels.some(l => (l.name || l) === excludeLabel))
+              ) || null;
             }
 
             async function closeWithComment(octokit, owner, repo, issue, comment) {
@@ -220,7 +225,7 @@ jobs:
                 const missing = uncovered.filter(op => !op[sdk.field]);
                 let existing;
                 try {
-                  existing = await findOpenIssue(sdkOctokit, owner, sdk.repo);
+                  existing = await findOpenIssue(sdkOctokit, owner, sdk.repo, { excludeLabel: 'sdk-coverage' });
                 } catch (e) {
                   console.log(`${sdk.label}: failed to list issues: ${e.message}`);
                   continue;
@@ -292,7 +297,7 @@ jobs:
             // --- Summary issue in the calling repo (default repo token) ---
             let summary;
             try {
-              summary = await findOpenIssue(github, context.repo.owner, context.repo.repo);
+              summary = await findOpenIssue(github, context.repo.owner, context.repo.repo, { labels: 'new-operations,sdk-coverage' });
             } catch (e) {
               summary = null;
               console.log(`Failed to list summary issues: ${e.message}`);
