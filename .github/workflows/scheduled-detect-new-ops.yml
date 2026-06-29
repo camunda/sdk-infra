@@ -105,26 +105,12 @@ jobs:
           "
           echo "uncovered=$(cat /tmp/uncovered.json)" >> $GITHUB_OUTPUT
 
-      - name: Check for existing summary issue
-        if: steps.diff.outputs.uncovered != '[]' && steps.diff.outputs.uncovered != ''
-        id: existing
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const { data: issues } = await github.rest.issues.listForRepo({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              labels: 'new-operations',
-              state: 'open',
-            });
-            core.setOutput('has_open', issues.length > 0 ? 'true' : 'false');
-
+      # Vault is imported on every run (not just when a gap is found) so the
+      # reconcile step below can also close/comment on cross-repo SDK issues
+      # once coverage is complete. Failure is non-fatal — without the token we
+      # fall back to reconciling only the summary issue in this repo.
       - name: Import Vault secrets
         id: vault-secrets
-        if: >
-          steps.diff.outputs.uncovered != '[]' &&
-          steps.diff.outputs.uncovered != '' &&
-          steps.existing.outputs.has_open != 'true'
         uses: hashicorp/vault-action@892a26828f195e65540a40b4768ae4571f51ebfc # v4.0.0
         continue-on-error: true
         with:
@@ -145,115 +131,166 @@ jobs:
           app_id: ${{ env.GITHUB_APP_ID }}
           private_key: ${{ env.GITHUB_APP_PRIVATE_KEY }}
 
-      - name: Open tracking issues
-        if: >
-          steps.diff.outputs.uncovered != '[]' &&
-          steps.diff.outputs.uncovered != '' &&
-          steps.existing.outputs.has_open != 'true'
+      # Reconcile tracking issues with current coverage. Runs on every execution
+      # (not just when a gap exists) so issues are created when coverage regresses,
+      # updated as individual SDKs catch up, and closed automatically once an
+      # operation is fully covered everywhere.
+      - name: Reconcile tracking issues
         uses: actions/github-script@v7
         env:
           SDK_ISSUE_TOKEN: ${{ steps.app-token.outputs.token || secrets.SDK_ISSUE_TOKEN }}
+          UNCOVERED: ${{ steps.diff.outputs.uncovered }}
         with:
           script: |
-            const uncovered = JSON.parse('${{ steps.diff.outputs.uncovered }}');
-            if (!uncovered.length) return;
+            const uncovered = JSON.parse(process.env.UNCOVERED || '[]');
 
             const owner = 'camunda';
+            const workflowUrl = 'https://github.com/camunda/sdk-infra/actions/workflows/scheduled-detect-new-ops.yml';
             const icon = (v) => v ? ':white_check_mark:' : ':x:';
 
-            // --- Per-SDK issue creation ---
             const sdkRepos = [
-              { repo: 'orchestration-cluster-api-js',     label: 'JS',     field: 'js' },
+              { repo: 'orchestration-cluster-api-js',      label: 'JS',     field: 'js' },
               { repo: 'orchestration-cluster-api-python',  label: 'Python', field: 'py' },
-              { repo: 'orchestration-cluster-api-csharp',  label: 'C#',    field: 'cs' },
+              { repo: 'orchestration-cluster-api-csharp',  label: 'C#',     field: 'cs' },
             ];
 
-            // Use SDK_ISSUE_TOKEN for cross-repo access; fall back to no cross-repo issues
+            // Cross-repo work (per-SDK issues) needs the GitHub App token; without
+            // it we still reconcile the summary issue in this repo.
             const sdkToken = process.env.SDK_ISSUE_TOKEN;
             let sdkOctokit = null;
             if (sdkToken) {
-              const { Octokit } = await import('@octokit/rest');
-              sdkOctokit = new Octokit({ auth: sdkToken });
+              // Build a second client authenticated with the cross-repo token by
+              // reusing the Octokit class behind the provided `github` instance,
+              // rather than importing @octokit/rest — that package is not
+              // resolvable from actions/github-script on the Node 24 runner.
+              const SdkOctokit = github.constructor;
+              sdkOctokit = new SdkOctokit({ auth: sdkToken });
             } else {
-              console.log('SDK_ISSUE_TOKEN not configured — skipping per-SDK issues. Only the summary issue in sdk-infra will be created.');
+              console.log('No SDK token — reconciling the summary issue only (per-SDK issues left untouched).');
             }
 
-            const sdkIssueLinks = [];
+            // First open issue carrying the new-operations label, or null.
+            async function findOpenIssue(octokit, repo) {
+              const { data } = await octokit.rest.issues.listForRepo({
+                owner, repo, labels: 'new-operations', state: 'open',
+              });
+              return data.length ? data[0] : null;
+            }
 
-            for (const sdk of sdkRepos) {
-              const missing = uncovered.filter(op => !op[sdk.field]);
-              if (!missing.length) {
-                console.log(`${sdk.label}: fully covered — skipping.`);
-                continue;
-              }
+            async function closeWithComment(octokit, repo, issue, comment) {
+              await octokit.rest.issues.createComment({
+                owner, repo, issue_number: issue.number, body: comment,
+              });
+              await octokit.rest.issues.update({
+                owner, repo, issue_number: issue.number, state: 'closed',
+              });
+            }
 
-              if (!sdkOctokit) {
-                console.log(`${sdk.label}: ${missing.length} missing, but no token to create issue.`);
-                continue;
-              }
+            const sdkIssueLinks = [];      // for the summary body
+            const freshlyCreated = [];     // {repo, number} of SDK issues created this run
 
-              // Check for existing open issue in the SDK repo
-              try {
-                const { data: existing } = await sdkOctokit.rest.issues.listForRepo({
-                  owner,
-                  repo: sdk.repo,
-                  labels: 'new-operations',
-                  state: 'open',
-                });
-                if (existing.length > 0) {
-                  console.log(`${sdk.label}: open issue already exists: ${existing[0].html_url}`);
-                  sdkIssueLinks.push(`- **${sdk.label}**: ${existing[0].html_url}`);
+            // --- Per-SDK reconciliation ---
+            if (sdkOctokit) {
+              for (const sdk of sdkRepos) {
+                const missing = uncovered.filter(op => !op[sdk.field]);
+                let existing;
+                try {
+                  existing = await findOpenIssue(sdkOctokit, sdk.repo);
+                } catch (e) {
+                  console.log(`${sdk.label}: failed to list issues: ${e.message}`);
                   continue;
                 }
-              } catch (e) {
-                console.log(`${sdk.label}: failed to check existing issues: ${e.message}`);
-                continue;
+
+                // Fully covered: close any open issue, otherwise nothing to do.
+                if (!missing.length) {
+                  if (existing) {
+                    try {
+                      await closeWithComment(sdkOctokit, sdk.repo, existing,
+                        'All listed operations now have example coverage — closing automatically.');
+                      console.log(`${sdk.label}: coverage complete — closed ${existing.html_url}`);
+                    } catch (e) {
+                      console.log(`${sdk.label}: failed to close issue: ${e.message}`);
+                    }
+                  } else {
+                    console.log(`${sdk.label}: fully covered — nothing to do.`);
+                  }
+                  continue;
+                }
+
+                // Still missing: create or update the issue to reflect the current list.
+                const rows = missing.map(op =>
+                  `| \`${op.operationId}\` | \`${op.method}\` | \`${op.path}\` |`
+                ).join('\n');
+                const body = [
+                  '## Operations missing example coverage',
+                  '',
+                  '| Operation | Method | Path |',
+                  '|-----------|--------|------|',
+                  rows,
+                  '',
+                  'Add an `operation-map.json` entry and example code for each operation listed above.',
+                  '',
+                  `_Auto-generated by the [daily new operations check](${workflowUrl}). This issue is updated automatically as coverage changes and closed once every listed operation is covered._`,
+                ].join('\n');
+                const title = `Missing example coverage: ${missing.map(o => o.operationId).join(', ')}`;
+
+                try {
+                  if (existing) {
+                    if (existing.title !== title || existing.body !== body) {
+                      await sdkOctokit.rest.issues.update({
+                        owner, repo: sdk.repo, issue_number: existing.number, title, body,
+                      });
+                      console.log(`${sdk.label}: updated ${existing.html_url}`);
+                    } else {
+                      console.log(`${sdk.label}: already up to date (${existing.html_url}).`);
+                    }
+                    sdkIssueLinks.push(`- **${sdk.label}**: ${existing.html_url}`);
+                  } else {
+                    const { data: created } = await sdkOctokit.rest.issues.create({
+                      owner, repo: sdk.repo, title, body, labels: ['new-operations'],
+                    });
+                    console.log(`${sdk.label}: created ${created.html_url}`);
+                    sdkIssueLinks.push(`- **${sdk.label}**: ${created.html_url}`);
+                    freshlyCreated.push({ repo: sdk.repo, number: created.number });
+                  }
+                } catch (e) {
+                  console.log(`${sdk.label}: failed to create/update issue: ${e.message}`);
+                }
               }
-
-              const rows = missing.map(op =>
-                `| \`${op.operationId}\` | \`${op.method}\` | \`${op.path}\` |`
-              ).join('\n');
-
-              const sdkBody = [
-                '## Operations missing example coverage',
-                '',
-                '| Operation | Method | Path |',
-                '|-----------|--------|------|',
-                rows,
-                '',
-                'Add an `operation-map.json` entry and example code for each operation listed above.',
-                '',
-                '_Auto-generated by the [daily new operations check](https://github.com/camunda/sdk-infra/actions/workflows/scheduled-detect-new-ops.yml).',
-                'The summary issue with cross-SDK coverage will be linked below once created._',
-              ].join('\n');
-
-              const opNames = missing.map(o => o.operationId).join(', ');
-              const title = `Missing example coverage: ${opNames}`;
-
-              try {
-                const { data: sdkIssue } = await sdkOctokit.rest.issues.create({
-                  owner,
-                  repo: sdk.repo,
-                  title,
-                  body: sdkBody,
-                  labels: ['new-operations'],
-                });
-                console.log(`${sdk.label}: created ${sdkIssue.html_url}`);
-                sdkIssueLinks.push(`- **${sdk.label}**: ${sdkIssue.html_url}`);
-              } catch (e) {
-                console.log(`${sdk.label}: failed to create issue: ${e.message}`);
+            } else {
+              for (const sdk of sdkRepos) {
+                const missing = uncovered.filter(op => !op[sdk.field]);
+                if (missing.length) console.log(`${sdk.label}: ${missing.length} missing, but no token to create/update issue.`);
               }
             }
 
-            // --- Summary issue in sdk-infra ---
+            // --- Summary issue in sdk-infra (default repo token) ---
+            let summary;
+            try {
+              summary = await findOpenIssue(github, context.repo.repo);
+            } catch (e) {
+              summary = null;
+              console.log(`Failed to list summary issues: ${e.message}`);
+            }
+
+            // No gaps anywhere: close the summary if one is open, then stop.
+            if (!uncovered.length) {
+              if (summary) {
+                await closeWithComment(github, context.repo.repo, summary,
+                  'All operations now have SDK example coverage across JS, Python, and C# — closing automatically.');
+                console.log(`Summary issue: coverage complete — closed ${summary.html_url}`);
+              } else {
+                console.log('No coverage gaps and no open summary issue — nothing to do.');
+              }
+              return;
+            }
+
             const rows = uncovered.map(op =>
               `| \`${op.operationId}\` | \`${op.method}\` | \`${op.path}\` | ${icon(op.js)} | ${icon(op.py)} | ${icon(op.cs)} |`
             ).join('\n');
-
             const linkedSection = sdkIssueLinks.length
               ? '\n\n### Linked SDK issues\n\n' + sdkIssueLinks.join('\n')
               : '';
-
             const summaryBody = [
               '## Operations missing SDK example coverage',
               '',
@@ -264,47 +301,39 @@ jobs:
               'Each SDK repo should add an `operation-map.json` entry and example code for uncovered operations.',
               linkedSection,
               '',
-              '_Auto-generated by the daily new operations check. Coverage is determined by each SDK\'s `examples/operation-map.json`._',
+              '_Auto-generated by the daily new operations check. Coverage is determined by each SDK\'s `examples/operation-map.json`, and this issue is updated automatically as coverage changes (and closed once every operation is covered)._',
             ].join('\n');
-
             const summaryTitle = `SDK coverage gaps: ${uncovered.map(o => o.operationId).join(', ')}`;
 
-            const { data: summaryIssue } = await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: summaryTitle,
-              body: summaryBody,
-              labels: ['new-operations', 'sdk-coverage'],
-            });
-            console.log(`Summary issue: ${summaryIssue.html_url}`);
+            if (summary) {
+              if (summary.title !== summaryTitle || summary.body !== summaryBody) {
+                await github.rest.issues.update({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  issue_number: summary.number, title: summaryTitle, body: summaryBody,
+                });
+                console.log(`Summary issue: updated ${summary.html_url}`);
+              } else {
+                console.log(`Summary issue: already up to date (${summary.html_url}).`);
+              }
+            } else {
+              const { data: created } = await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title: summaryTitle, body: summaryBody, labels: ['new-operations', 'sdk-coverage'],
+              });
+              summary = created;
+              console.log(`Summary issue: created ${created.html_url}`);
+            }
 
-            // --- Back-link: update SDK issues to reference the summary ---
-            if (sdkOctokit && sdkIssueLinks.length) {
-              for (const sdk of sdkRepos) {
-                const missing = uncovered.filter(op => !op[sdk.field]);
-                if (!missing.length) continue;
-
-                // Find the issue we just created (or the existing one)
+            // --- Back-link only the SDK issues created this run, to avoid daily comment spam ---
+            if (sdkOctokit && freshlyCreated.length) {
+              for (const { repo, number } of freshlyCreated) {
                 try {
-                  const { data: sdkIssues } = await sdkOctokit.rest.issues.listForRepo({
-                    owner,
-                    repo: sdk.repo,
-                    labels: 'new-operations',
-                    state: 'open',
-                    sort: 'created',
-                    direction: 'desc',
-                    per_page: 1,
+                  await sdkOctokit.rest.issues.createComment({
+                    owner, repo, issue_number: number,
+                    body: `Cross-SDK summary: ${summary.html_url}`,
                   });
-                  if (sdkIssues.length) {
-                    await sdkOctokit.rest.issues.createComment({
-                      owner,
-                      repo: sdk.repo,
-                      issue_number: sdkIssues[0].number,
-                      body: `Cross-SDK summary: ${summaryIssue.html_url}`,
-                    });
-                  }
                 } catch (e) {
-                  console.log(`${sdk.label}: failed to back-link: ${e.message}`);
+                  console.log(`${repo}: failed to back-link: ${e.message}`);
                 }
               }
             }
