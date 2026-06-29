@@ -159,7 +159,7 @@ jobs:
       # updated as individual SDKs catch up, and closed automatically once an
       # operation is fully covered everywhere.
       - name: Reconcile tracking issues
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           SDK_ISSUE_TOKEN: ${{ steps.app-token.outputs.token || secrets['sdk-issue-token'] }}
           UNCOVERED: ${{ steps.diff.outputs.uncovered }}
