@@ -1,10 +1,12 @@
-# Reusable workflow: Notify Slack about community issues/PRs and Dependabot PRs.
+# Reusable workflow: Notify Slack about community issues/PRs and
+# dependency-bot (Dependabot / Renovate) PRs.
 #
 # Called by SDK repos on `issues: [opened]` and `pull_request_target: [opened]`.
 # Classifies the event by author association and org membership:
 #
 #   - Community (non-member, non-bot): urgent notification with @group mention
-#   - Dependabot: non-urgent notification (no @mention)
+#   - Dependabot / Renovate PRs: non-urgent notification (no @mention).
+#     Bot-opened *issues* (e.g. Renovate's Dependency Dashboard) stay silent.
 #   - Maintainer/collaborator/org member: skipped (no notification)
 #
 # Note: GitHub's author_association field can return CONTRIBUTOR instead of
@@ -86,6 +88,7 @@ jobs:
       url: ${{ steps.classify.outputs.url }}
       author: ${{ steps.classify.outputs.author }}
       event-type: ${{ steps.classify.outputs.event_type }}
+      bot-name: ${{ steps.classify.outputs.bot_name }}
     steps:
       - name: Import Vault secrets
         id: secrets
@@ -149,11 +152,18 @@ jobs:
 
           # --- Determine category ---
           CATEGORY="unknown"
+          BOT_NAME=""
 
-          # Dependabot
-          if [ "$ACTOR" = "dependabot[bot]" ]; then
-            CATEGORY="dependabot"
+          # Dependency-update bots (Dependabot, Renovate) — PRs only.
+          # Bot-opened issues (e.g. Renovate's Dependency Dashboard) fall
+          # through to the generic bot skip below.
+          if [ "$EVENT_NAME" != "issues" ]; then
+            case "$ACTOR" in
+              "dependabot[bot]") CATEGORY="dependency-bot"; BOT_NAME="Dependabot" ;;
+              "renovate[bot]")   CATEGORY="dependency-bot"; BOT_NAME="Renovate" ;;
+            esac
           fi
+          echo "bot_name=$BOT_NAME" >> $GITHUB_OUTPUT
 
           # Skip other bots
           if [ "$CATEGORY" = "unknown" ]; then
@@ -246,9 +256,9 @@ jobs:
           webhook-type: incoming-webhook
           payload: ${{ steps.payload.outputs.json }}
 
-  notify-dependabot:
+  notify-dependency-bot:
     needs: classify
-    if: needs.classify.outputs.category == 'dependabot'
+    if: needs.classify.outputs.category == 'dependency-bot'
     runs-on: ubuntu-latest
     timeout-minutes: 2
     permissions: {}
@@ -262,6 +272,7 @@ jobs:
           REPO_NAME: ${{ inputs.repo-name }}
           TITLE: ${{ needs.classify.outputs.title }}
           URL: ${{ needs.classify.outputs.url }}
+          BOT_NAME: ${{ needs.classify.outputs.bot-name }}
         run: |
           # Escape Slack mrkdwn control characters in the title to prevent
           # injection via contributor-controlled PR titles.
@@ -270,13 +281,14 @@ jobs:
             --arg repo "$REPO_NAME" \
             --arg title "$SAFE_TITLE" \
             --arg url "$URL" \
+            --arg bot "${BOT_NAME:-Dependency bot}" \
             '{
-              text: (":robot_face: Dependabot PR on `" + $repo + "`"),
+              text: (":robot_face: " + $bot + " PR on `" + $repo + "`"),
               blocks: [{
                 type: "section",
                 text: {
                   type: "mrkdwn",
-                  text: (":robot_face: *Dependabot PR*\n\n*Repo:* `" + $repo + "`\n*Title:* <" + $url + "|" + $title + ">")
+                  text: (":robot_face: *" + $bot + " PR*\n\n*Repo:* `" + $repo + "`\n*Title:* <" + $url + "|" + $title + ">")
                 }
               }]
             }')
@@ -284,7 +296,7 @@ jobs:
           echo "$PAYLOAD" >> $GITHUB_OUTPUT
           echo "ENDOFPAYLOAD" >> $GITHUB_OUTPUT
 
-      - name: Send Dependabot notification
+      - name: Send dependency-bot notification
         if: ${{ env.SLACK_WEBHOOK_URL != '' }}
         uses: slackapi/slack-github-action@v3.0.2
         with:
