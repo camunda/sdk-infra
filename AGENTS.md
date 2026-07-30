@@ -82,6 +82,7 @@ The currently promoted stable major is set via the `CAMUNDA_SDK_CURRENT_STABLE_M
 | `sdk-detect-new-ops.yml` | Detect operations missing SDK example coverage; opens per-SDK issues and a cross-linked summary (requires `SDK_ISSUE_TOKEN` secret for cross-repo issues) |
 | `scheduled-detect-new-ops.yml` | Scheduled daily check for SDK coverage gaps with cross-repo issue creation |
 | `sdk-slack-notify.yml` | Send a Slack notification when a release/publish workflow fails (requires `SLACK_SDK_ALERTS` repo secret) |
+| `sdk-slack-community-notify.yml` | Notify Slack about community issues/PRs and dependency-bot PRs. With `slack-bot-token` + `slack-channel-id` it posts via `chat.postMessage`, records the message reference on the PR, and adds a `:white_check_mark:` reaction when that PR is merged; falls back to the incoming webhook (no reaction) when no bot token is set. Callers must grant `issues: write` and `pull-requests: write` |
 
 #### Composite actions
 

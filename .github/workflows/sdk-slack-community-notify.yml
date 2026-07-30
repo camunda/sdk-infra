@@ -1,13 +1,24 @@
 # Reusable workflow: Notify Slack about community issues/PRs and
 # dependency-bot (Dependabot / Renovate) PRs.
 #
-# Called by SDK repos on `issues: [opened]` and `pull_request_target: [opened]`.
+# Called by SDK repos on `issues: [opened]` and
+# `pull_request_target: [opened, closed]`.
 # Classifies the event by author association and org membership:
 #
 #   - Community (non-member, non-bot): urgent notification with @group mention
 #   - Dependabot / Renovate PRs: non-urgent notification (no @mention).
 #     Bot-opened *issues* (e.g. Renovate's Dependency Dashboard) stay silent.
 #   - Maintainer/collaborator/org member: skipped (no notification)
+#
+# When `slack-bot-token` is supplied, the notification is posted with the Slack
+# Web API (chat.postMessage) instead of the incoming webhook, and the resulting
+# channel + message timestamp are recorded as a hidden marker comment on the PR.
+# When that PR is later merged, the `react-on-merge` job reads the marker back
+# and adds a :white_check_mark: reaction to the original Slack message.
+#
+# Without a bot token the workflow falls back to the incoming webhook and no
+# reaction is possible, because webhooks return a bare `ok` with no message
+# timestamp to react to.
 #
 # Note: GitHub's author_association field can return CONTRIBUTOR instead of
 # MEMBER for org members who have base-permission-only access (not added to
@@ -20,26 +31,40 @@
 #   - Repos must be onboarded to Vault (infra-core)
 #   - The camunda-sdk-automation GitHub App must be installed on the repo
 #     with Organization Members: read permission
+#   - For reactions: a Slack bot token with `chat:write` and `reactions:write`,
+#     with the bot invited to the target channel
 #
 # Usage:
 #   on:
 #     issues:
 #       types: [opened]
 #     pull_request_target:
-#       types: [opened]
+#       types: [opened, closed]
 #
 #   jobs:
 #     notify:
+#       permissions:
+#         issues: write
+#         pull-requests: write
 #       uses: camunda/sdk-infra/.github/workflows/sdk-slack-community-notify.yml@v1
 #       with:
 #         repo-name: orchestration-cluster-api-python
 #         mention-group: ${{ vars.SLACK_MENTION_GROUP }}
+#         slack-channel-id: ${{ vars.SLACK_SDK_ALERTS_CHANNEL_ID }}
 #         author-association: ${{ github.event.pull_request.author_association || github.event.issue.author_association }}
 #       secrets:
 #         slack-webhook-url: ${{ secrets.SLACK_SDK_ALERTS }}
+#         slack-bot-token: ${{ secrets.SLACK_SDK_BOT_TOKEN }}
 #         vault-addr: ${{ secrets.VAULT_ADDR }}
 #         vault-role-id: ${{ secrets.VAULT_ROLE_ID }}
 #         vault-secret-id: ${{ secrets.VAULT_SECRET_ID }}
+#
+# The marker comment is written with the Issues Comments API, which is shared
+# between issues and pull requests. Both `issues: write` and
+# `pull-requests: write` are requested because GitHub's docs do not state which
+# scope is checked when the target is a PR; granting both avoids a silent
+# failure. Callers must grant them, since a called workflow cannot escalate
+# beyond the caller's grant.
 
 name: Slack Community Notification
 
@@ -63,9 +88,25 @@ on:
         required: false
         default: ''
         type: string
+      slack-channel-id:
+        description: >-
+          Target Slack channel ID (e.g. C07XXXXXXXX). Required when
+          `slack-bot-token` is supplied, because chat.postMessage needs an
+          explicit channel. Ignored on the webhook fallback path.
+          Must be passed as a repository variable, not a secret: the `secrets`
+          context is not available in `jobs.<job_id>.with.<with_id>`.
+        required: false
+        default: ''
+        type: string
     secrets:
       slack-webhook-url:
         description: 'Slack Incoming Webhook URL'
+        required: false
+      slack-bot-token:
+        description: >-
+          Slack bot token (xoxb-...) with `chat:write` and `reactions:write`.
+          When set, takes precedence over the webhook and enables the
+          :white_check_mark: reaction on merge.
         required: false
       vault-addr:
         description: 'Vault server URL'
@@ -79,6 +120,8 @@ on:
 
 jobs:
   classify:
+    # Only classify on open; `closed` events are handled by react-on-merge.
+    if: github.event.action != 'closed'
     runs-on: ubuntu-latest
     timeout-minutes: 2
     permissions: {}
@@ -204,12 +247,18 @@ jobs:
     if: needs.classify.outputs.category == 'community'
     runs-on: ubuntu-latest
     timeout-minutes: 2
-    permissions: {}
+    # Needed to record the Slack message reference as a marker comment.
+    # The marker step fails soft, so a caller that omits these still gets the
+    # notification; only the merge reaction is lost.
+    permissions:
+      issues: write
+      pull-requests: write
     env:
       SLACK_WEBHOOK_URL: ${{ secrets.slack-webhook-url }}
+      SLACK_BOT_TOKEN: ${{ secrets.slack-bot-token }}
     steps:
       - name: Build payload
-        if: ${{ env.SLACK_WEBHOOK_URL != '' }}
+        if: ${{ env.SLACK_WEBHOOK_URL != '' || env.SLACK_BOT_TOKEN != '' }}
         id: payload
         env:
           MENTION_GROUP: ${{ inputs.mention-group }}
@@ -248,25 +297,71 @@ jobs:
           echo "$PAYLOAD" >> $GITHUB_OUTPUT
           echo "ENDOFPAYLOAD" >> $GITHUB_OUTPUT
 
-      - name: Send community notification
-        if: ${{ env.SLACK_WEBHOOK_URL != '' }}
+      - name: Send community notification (bot token)
+        if: ${{ env.SLACK_BOT_TOKEN != '' }}
+        id: post
+        env:
+          CHANNEL_ID: ${{ inputs.slack-channel-id }}
+          PAYLOAD: ${{ steps.payload.outputs.json }}
+        run: |
+          if [ -z "$CHANNEL_ID" ]; then
+            echo "::error::slack-channel-id is required when slack-bot-token is set"
+            exit 1
+          fi
+          API_PAYLOAD=$(echo "$PAYLOAD" | jq --arg ch "$CHANNEL_ID" '. + {channel: $ch}')
+          RESPONSE=$(curl -sS --max-time 10 -X POST https://slack.com/api/chat.postMessage \
+            -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+            -H "Content-Type: application/json; charset=utf-8" \
+            --data "$API_PAYLOAD")
+          if [ "$(echo "$RESPONSE" | jq -r '.ok')" != "true" ]; then
+            echo "::error::chat.postMessage failed: $(echo "$RESPONSE" | jq -r '.error // "unknown"')"
+            exit 1
+          fi
+          echo "channel=$(echo "$RESPONSE" | jq -r '.channel')" >> $GITHUB_OUTPUT
+          echo "ts=$(echo "$RESPONSE" | jq -r '.ts')" >> $GITHUB_OUTPUT
+
+      - name: Send community notification (webhook fallback)
+        if: ${{ env.SLACK_BOT_TOKEN == '' && env.SLACK_WEBHOOK_URL != '' }}
         uses: slackapi/slack-github-action@v3.0.2
         with:
           webhook: ${{ secrets.slack-webhook-url }}
           webhook-type: incoming-webhook
           payload: ${{ steps.payload.outputs.json }}
 
+      - name: Record Slack message reference
+        if: ${{ steps.post.outputs.ts != '' && needs.classify.outputs.event-type == 'pr' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          CHANNEL: ${{ steps.post.outputs.channel }}
+          TS: ${{ steps.post.outputs.ts }}
+        run: |
+          # Non-fatal: the notification has already been delivered, so a
+          # missing comment-write grant only costs the merge reaction.
+          BODY=$(printf '<!-- slack-msg channel="%s" ts="%s" -->' "$CHANNEL" "$TS")
+          if ! curl -sS --fail-with-body --max-time 10 -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
+            --data "$(jq -n --arg body "$BODY" '{body: $body}')" > /dev/null; then
+            echo "::warning::Could not record the Slack message reference (needs issues: write and pull-requests: write); no reaction will be added on merge"
+          fi
+
   notify-dependency-bot:
     needs: classify
     if: needs.classify.outputs.category == 'dependency-bot'
     runs-on: ubuntu-latest
     timeout-minutes: 2
-    permissions: {}
+    # See notify-community: needed to record the Slack message reference.
+    permissions:
+      issues: write
+      pull-requests: write
     env:
       SLACK_WEBHOOK_URL: ${{ secrets.slack-webhook-url }}
+      SLACK_BOT_TOKEN: ${{ secrets.slack-bot-token }}
     steps:
       - name: Build payload
-        if: ${{ env.SLACK_WEBHOOK_URL != '' }}
+        if: ${{ env.SLACK_WEBHOOK_URL != '' || env.SLACK_BOT_TOKEN != '' }}
         id: payload
         env:
           REPO_NAME: ${{ inputs.repo-name }}
@@ -296,10 +391,121 @@ jobs:
           echo "$PAYLOAD" >> $GITHUB_OUTPUT
           echo "ENDOFPAYLOAD" >> $GITHUB_OUTPUT
 
-      - name: Send dependency-bot notification
-        if: ${{ env.SLACK_WEBHOOK_URL != '' }}
+      - name: Send dependency-bot notification (bot token)
+        if: ${{ env.SLACK_BOT_TOKEN != '' }}
+        id: post
+        env:
+          CHANNEL_ID: ${{ inputs.slack-channel-id }}
+          PAYLOAD: ${{ steps.payload.outputs.json }}
+        run: |
+          if [ -z "$CHANNEL_ID" ]; then
+            echo "::error::slack-channel-id is required when slack-bot-token is set"
+            exit 1
+          fi
+          API_PAYLOAD=$(echo "$PAYLOAD" | jq --arg ch "$CHANNEL_ID" '. + {channel: $ch}')
+          RESPONSE=$(curl -sS --max-time 10 -X POST https://slack.com/api/chat.postMessage \
+            -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+            -H "Content-Type: application/json; charset=utf-8" \
+            --data "$API_PAYLOAD")
+          if [ "$(echo "$RESPONSE" | jq -r '.ok')" != "true" ]; then
+            echo "::error::chat.postMessage failed: $(echo "$RESPONSE" | jq -r '.error // "unknown"')"
+            exit 1
+          fi
+          echo "channel=$(echo "$RESPONSE" | jq -r '.channel')" >> $GITHUB_OUTPUT
+          echo "ts=$(echo "$RESPONSE" | jq -r '.ts')" >> $GITHUB_OUTPUT
+
+      - name: Send dependency-bot notification (webhook fallback)
+        if: ${{ env.SLACK_BOT_TOKEN == '' && env.SLACK_WEBHOOK_URL != '' }}
         uses: slackapi/slack-github-action@v3.0.2
         with:
           webhook: ${{ secrets.slack-webhook-url }}
           webhook-type: incoming-webhook
           payload: ${{ steps.payload.outputs.json }}
+
+      - name: Record Slack message reference
+        if: ${{ steps.post.outputs.ts != '' && needs.classify.outputs.event-type == 'pr' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          CHANNEL: ${{ steps.post.outputs.channel }}
+          TS: ${{ steps.post.outputs.ts }}
+        run: |
+          # Non-fatal: see notify-community.
+          BODY=$(printf '<!-- slack-msg channel="%s" ts="%s" -->' "$CHANNEL" "$TS")
+          if ! curl -sS --fail-with-body --max-time 10 -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
+            --data "$(jq -n --arg body "$BODY" '{body: $body}')" > /dev/null; then
+            echo "::warning::Could not record the Slack message reference (needs issues: write and pull-requests: write); no reaction will be added on merge"
+          fi
+
+  react-on-merge:
+    # Adds :white_check_mark: to the Slack message announcing this PR once it
+    # is merged. Deliberately independent of `classify`, which does not run on
+    # `closed` events: the marker comment records whether a message exists.
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      github.event.action == 'closed' &&
+      github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      issues: read
+      pull-requests: read
+    env:
+      SLACK_BOT_TOKEN: ${{ secrets.slack-bot-token }}
+    steps:
+      - name: Find recorded Slack message
+        if: ${{ env.SLACK_BOT_TOKEN != '' }}
+        id: marker
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          COMMENTS=$(curl -sS --fail-with-body --max-time 10 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100")
+
+          # Only comments authored by github-actions[bot] are trusted: a
+          # contributor could otherwise post a forged marker and make the bot
+          # react to an arbitrary Slack message. The capture pattern is
+          # charset-constrained so nothing unexpected reaches the Slack API,
+          # and `capture(...)?` discards a malformed marker (e.g. an edited
+          # comment) rather than failing the job.
+          #
+          # The marker is written when the PR is opened and comments are
+          # returned in ascending order, so the first match is always on the
+          # first page -- this stays correct on PRs with >100 comments.
+          REF=$(echo "$COMMENTS" | jq -r '
+            [ .[]
+              | select(.user.type == "Bot" and .user.login == "github-actions[bot]")
+              | .body
+              | capture("<!-- slack-msg channel=\"(?<ch>[A-Z0-9]+)\" ts=\"(?<ts>[0-9]+\\.[0-9]+)\" -->")?
+            ] | first // empty | "\(.ch) \(.ts)"')
+
+          if [ -z "$REF" ]; then
+            echo "::notice::No Slack message reference found on this PR; nothing to react to"
+            exit 0
+          fi
+          echo "channel=${REF%% *}" >> $GITHUB_OUTPUT
+          echo "ts=${REF##* }" >> $GITHUB_OUTPUT
+
+      - name: 'Add :white_check_mark: reaction'
+        if: ${{ steps.marker.outputs.ts != '' }}
+        env:
+          CHANNEL: ${{ steps.marker.outputs.channel }}
+          TS: ${{ steps.marker.outputs.ts }}
+        run: |
+          RESPONSE=$(curl -sS --max-time 10 -X POST https://slack.com/api/reactions.add \
+            -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+            -H "Content-Type: application/json; charset=utf-8" \
+            --data "$(jq -n --arg ch "$CHANNEL" --arg ts "$TS" \
+              '{channel: $ch, timestamp: $ts, name: "white_check_mark"}')")
+          ERROR=$(echo "$RESPONSE" | jq -r '.error // ""')
+          # already_reacted keeps this idempotent across re-runs.
+          if [ "$(echo "$RESPONSE" | jq -r '.ok')" != "true" ] && [ "$ERROR" != "already_reacted" ]; then
+            echo "::error::reactions.add failed: ${ERROR:-unknown}"
+            exit 1
+          fi
