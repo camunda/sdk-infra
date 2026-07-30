@@ -122,7 +122,30 @@ Full integration validation still happens in downstream SDK repos via their CI p
 This repo uses two versioning schemes:
 
 - **npm package**: Automated via [semantic-release](https://github.com/semantic-release/semantic-release) on the `main` branch. The version in `package.json` is `0.0.0-semantic-release` (sentinel — never edit manually).
-- **GitHub refs**: Manual tags (`v1`, `v1.1.0`, etc.) for reusable workflows and actions. SDK repos pin to a major version tag (`@v1`). Breaking changes increment the major version.
+- **GitHub refs**: The moving major tag `v1` only. SDK repos pin to it (`@v1`). Once a change is on `main`, move the tag forward:
+
+  ```bash
+  git tag -f v1 origin/main && git push -f origin refs/tags/v1
+  ```
+
+  A breaking change to a workflow's or action's interface gets a new major tag (`v2`), and consumers are migrated deliberately.
+
+> [!IMPORTANT]
+> **Never hand-create a `vX.Y.Z` tag in this repo.** That namespace belongs to semantic-release, which derives the next npm version from the highest semver tag reachable from `main`. A manual `v1.10.0` makes it believe 1.10.0 already shipped, so it skips to 1.11.0 and npm silently loses a version. The two channels share one tag namespace, so the only safe manual tag is the `v1` major pointer.
+
+#### If a release fails after the tag is pushed
+
+semantic-release pushes the tag *before* it publishes, so a failure in between (for example a transient `remote: fatal error in commit_refs` when pushing its git notes) leaves a tag with no npm release behind it. Re-running the workflow will **not** recover it: the tag is now reachable from `main` with no commits after it, so semantic-release correctly reports "no new release" and exits green having published nothing.
+
+To recover, delete the orphaned tag and re-run:
+
+```bash
+git push origin :refs/tags/vX.Y.Z   # remote
+git tag -d vX.Y.Z                   # local
+gh run rerun <release-run-id>
+```
+
+Tags and npm are in sync when the highest `vX.Y.Z` tag, the highest `refs/notes/semantic-release-vX.Y.Z` ref, and `npm view @camunda8/sdk-infra version` all agree.
 
 ### Commit message guidelines
 
