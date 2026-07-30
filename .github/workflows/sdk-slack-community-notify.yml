@@ -43,6 +43,9 @@
 #
 #   jobs:
 #     notify:
+#       # Skip unmerged closes: there is nothing to announce and nothing to
+#       # react to, so the reusable workflow is not called at all.
+#       if: github.event.action == 'opened' || github.event.pull_request.merged == true
 #       permissions:
 #         issues: write
 #         pull-requests: write
