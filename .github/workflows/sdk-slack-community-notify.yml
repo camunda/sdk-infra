@@ -317,7 +317,12 @@ jobs:
             -H "Content-Type: application/json; charset=utf-8" \
             --data "$API_PAYLOAD")
           if [ "$(echo "$RESPONSE" | jq -r '.ok')" != "true" ]; then
-            echo "::error::chat.postMessage failed: $(echo "$RESPONSE" | jq -r '.error // "unknown"')"
+            # Slack returns `needed`/`provided` on scope errors. Without them a
+            # bare `missing_scope` gives no clue which scope to add.
+            echo "::error::chat.postMessage failed: $(echo "$RESPONSE" | jq -r '
+              (.error // "unknown")
+              + (if .needed   then " | needed: \(.needed)"     else "" end)
+              + (if .provided then " | provided: \(.provided)" else "" end)')"
             exit 1
           fi
           echo "channel=$(echo "$RESPONSE" | jq -r '.channel')" >> $GITHUB_OUTPUT
@@ -411,7 +416,12 @@ jobs:
             -H "Content-Type: application/json; charset=utf-8" \
             --data "$API_PAYLOAD")
           if [ "$(echo "$RESPONSE" | jq -r '.ok')" != "true" ]; then
-            echo "::error::chat.postMessage failed: $(echo "$RESPONSE" | jq -r '.error // "unknown"')"
+            # Slack returns `needed`/`provided` on scope errors. Without them a
+            # bare `missing_scope` gives no clue which scope to add.
+            echo "::error::chat.postMessage failed: $(echo "$RESPONSE" | jq -r '
+              (.error // "unknown")
+              + (if .needed   then " | needed: \(.needed)"     else "" end)
+              + (if .provided then " | provided: \(.provided)" else "" end)')"
             exit 1
           fi
           echo "channel=$(echo "$RESPONSE" | jq -r '.channel')" >> $GITHUB_OUTPUT
@@ -509,6 +519,9 @@ jobs:
           ERROR=$(echo "$RESPONSE" | jq -r '.error // ""')
           # already_reacted keeps this idempotent across re-runs.
           if [ "$(echo "$RESPONSE" | jq -r '.ok')" != "true" ] && [ "$ERROR" != "already_reacted" ]; then
-            echo "::error::reactions.add failed: ${ERROR:-unknown}"
+            echo "::error::reactions.add failed: $(echo "$RESPONSE" | jq -r '
+              (.error // "unknown")
+              + (if .needed   then " | needed: \(.needed)"     else "" end)
+              + (if .provided then " | provided: \(.provided)" else "" end)')"
             exit 1
           fi
