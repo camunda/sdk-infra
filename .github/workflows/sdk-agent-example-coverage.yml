@@ -1,0 +1,440 @@
+# Reusable workflow: implement missing SDK example coverage with the Copilot CLI.
+#
+# When the `sdk-detect-new-ops` workflow files a "Missing example coverage"
+# issue, this workflow picks it up, runs the Copilot CLI against the repo, and
+# opens a pull request with the examples. The SDK repos differ only in their
+# toolchain and their verification commands, so both are inputs.
+#
+# The caller owns the triggers (so it can gate on its own label) and passes the
+# issue number in. Grant the job permissions at the call site — a reusable
+# workflow cannot elevate beyond what the caller gives it.
+#
+# Usage:
+#   on:
+#     issues:
+#       types: [labeled]
+#     workflow_dispatch:
+#       inputs:
+#         issue-number:
+#           required: true
+#   jobs:
+#     implement:
+#       if: >-
+#         github.event_name == 'workflow_dispatch' ||
+#         (github.event.action == 'labeled' && github.event.label.name == 'new-operations')
+#       permissions:
+#         contents: read
+#         id-token: write
+#         copilot-requests: write
+#         issues: write
+#       uses: camunda/sdk-infra/.github/workflows/sdk-agent-example-coverage.yml@v1
+#       secrets: inherit
+#       with:
+#         language: js
+#         issue-number: ${{ github.event.issue.number || inputs.issue-number }}
+#         verify-commands: |
+#           npm run typecheck
+#           npm test
+
+name: Agent — example coverage
+
+on:
+  workflow_call:
+    inputs:
+      language:
+        description: 'SDK language: js, python, csharp, go, or rust.'
+        required: true
+        type: string
+      issue-number:
+        description: 'Number of the coverage issue to implement.'
+        required: true
+        type: string
+      verify-commands:
+        description: >-
+          Newline-separated commands that define "verified" for this repo. The
+          verify step runs exactly these and the agent prompt is handed exactly
+          these, so the gate and the agent's understanding of it cannot drift.
+        required: true
+        type: string
+      verify-artifacts:
+        description: >-
+          Newline-separated glob patterns for tracked files the verify commands
+          are allowed to regenerate (lockfiles, recorded fixtures). Changes to
+          these after verification are committed; anything else fails the run.
+        required: false
+        default: ''
+        type: string
+      extra-instructions:
+        description: 'Repo-specific instructions appended to the agent prompt.'
+        required: false
+        default: ''
+        type: string
+      sdk-infra-ref:
+        description: 'Ref of camunda/sdk-infra to load shared actions and scripts from.'
+        required: false
+        default: 'v1'
+        type: string
+      copilot-model:
+        description: 'Model passed to the Copilot CLI.'
+        required: false
+        default: 'claude-sonnet-4.6'
+        type: string
+      runs-on:
+        required: false
+        default: 'ubuntu-24.04'
+        type: string
+      timeout-minutes:
+        required: false
+        default: 45
+        type: number
+    secrets:
+      # Declared rather than left implicit: an undeclared secret resolves only
+      # under `secrets: inherit`, so a caller that passes secrets explicitly
+      # would otherwise reach Vault with an empty address and fail obscurely.
+      VAULT_ADDR:
+        required: true
+      VAULT_JWT_PATH:
+        required: true
+      VAULT_JWT_ROLE:
+        required: true
+      VAULT_JWT_AUDIENCE:
+        required: true
+
+jobs:
+  implement:
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+      id-token: write
+      copilot-requests: write
+      issues: write
+    concurrency:
+      group: agent-example-coverage-${{ github.repository }}-${{ inputs.issue-number }}
+      cancel-in-progress: false
+    env:
+      VERIFY_COMMANDS: ${{ inputs.verify-commands }}
+      VERIFY_ARTIFACTS: ${{ inputs.verify-artifacts }}
+      EXTRA_INSTRUCTIONS: ${{ inputs.extra-instructions }}
+      ISSUE_NUMBER: ${{ inputs.issue-number }}
+      BASE: ${{ github.event.repository.default_branch }}
+    steps:
+      - name: Import secrets
+        id: secrets
+        uses: hashicorp/vault-action@892a26828f195e65540a40b4768ae4571f51ebfc # v4.0.0
+        with:
+          url: ${{ secrets.VAULT_ADDR }}
+          method: jwt
+          path: ${{ secrets.VAULT_JWT_PATH }}
+          role: ${{ secrets.VAULT_JWT_ROLE }}
+          jwtGithubAudience: ${{ secrets.VAULT_JWT_AUDIENCE }}
+          exportEnv: false
+          secrets: |
+            secret/data/products/onboarding-and-migration/github.com/apps/camunda/camunda-sdk-automation GITHUB_APP_ID | APP_ID ;
+            secret/data/products/onboarding-and-migration/github.com/apps/camunda/camunda-sdk-automation GITHUB_APP_PRIVATE_KEY | APP_PRIVATE_KEY ;
+
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ steps.secrets.outputs.APP_ID }}
+          private-key: ${{ steps.secrets.outputs.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Check out the SDK repository
+        uses: actions/checkout@v6
+        with:
+          # Read-only token and no persisted credentials while the agent runs
+          # with --yolo; the app token is introduced only at push time.
+          token: ${{ github.token }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      # Shared scripts and composite actions are loaded from a checkout rather
+      # than a `camunda/sdk-infra/...@v1` reference so that they track
+      # `sdk-infra-ref`. A literal ref in `uses:` cannot be parameterised, which
+      # would mean a branch build of this workflow silently ran the v1 helpers.
+      - name: Check out shared sdk-infra helpers
+        uses: actions/checkout@v6
+        with:
+          repository: camunda/sdk-infra
+          ref: ${{ inputs.sdk-infra-ref }}
+          path: .sdk-infra
+          persist-credentials: false
+
+      - name: Hide the helper checkout from the SDK working tree
+        run: |
+          set -euo pipefail
+          # A repo-local exclude, so the helper checkout does not read as
+          # untracked mess to the working-tree checks below and no ignore rule
+          # has to be committed to every SDK repo.
+          echo '/.sdk-infra/' >> .git/info/exclude
+          echo "SDK_INFRA=${GITHUB_WORKSPACE}/.sdk-infra" >> "$GITHUB_ENV"
+
+      - name: Set up the toolchain
+        uses: ./.sdk-infra/actions/setup-sdk-toolchain
+        with:
+          language: ${{ inputs.language }}
+
+      - name: Install Copilot CLI
+        env:
+          COPILOT_CLI_VERSION: ${{ vars.COPILOT_CLI_VERSION || 'latest' }}
+        run: npm install -g "@github/copilot@${COPILOT_CLI_VERSION}"
+
+      - name: Configure committer identity
+        env:
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: |
+          git config --global user.name "${APP_SLUG}[bot]"
+          git config --global user.email "${APP_SLUG}[bot]@users.noreply.github.com"
+
+      - name: Resolve issue and create branch
+        id: setup
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          case "$ISSUE_NUMBER" in
+            ''|*[!0-9]*)
+              echo "::error::Issue number '${ISSUE_NUMBER}' is not a positive integer."
+              exit 1
+              ;;
+          esac
+
+          branch="agent/example-coverage-${ISSUE_NUMBER}"
+          echo "branch=${branch}" >> "$GITHUB_OUTPUT"
+
+          # If a previous run already opened a PR for this issue, stop: a second
+          # agent on the same head branch would race the first one's push.
+          existing="$(gh pr list --repo "$GH_REPO" --head "$branch" --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            echo "::notice::PR #${existing} is already open for ${branch}; nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+          # The issue is attacker-influenced text on a public repo, so it is
+          # written to files rather than to $GITHUB_OUTPUT or an env var that
+          # later gets interpolated into a shell command or a heredoc.
+          gh issue view "$ISSUE_NUMBER" --repo "$GH_REPO" --json title --jq '.title' > /tmp/issue-title.txt
+          gh issue view "$ISSUE_NUMBER" --repo "$GH_REPO" --json body --jq '.body' > /tmp/issue-body.md
+
+          git switch -c "$branch"
+
+      - name: Run Copilot CLI
+        if: steps.setup.outputs.skip != 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          COPILOT_MODEL: ${{ inputs.copilot-model }}
+        run: |
+          set -euo pipefail
+
+          # The issue body is untrusted, so it is never interpolated into a
+          # heredoc: a line equal to the terminator would truncate or rewrite the
+          # prompt. Static parts use quoted heredocs and the issue text is
+          # spliced in as indented data between them.
+          {
+            cat <<'PROMPT_HEAD'
+          You are adding example coverage to this Camunda SDK repository.
+
+          Read AGENTS.md first and follow it strictly. Also read
+          .github/prompts/add-missing-examples.prompt.md if it exists — it documents the
+          example conventions for this repo in detail.
+
+          The issue to resolve follows.
+          PROMPT_HEAD
+            printf '\n  Repository: %s\n  Issue: #%s\n  Title: %s\n\n' \
+              "$GITHUB_REPOSITORY" "$ISSUE_NUMBER" "$(cat /tmp/issue-title.txt)"
+            echo "  Body:"
+            sed 's/^/  /' /tmp/issue-body.md
+            cat <<'PROMPT_TAIL'
+
+          Do the following:
+          1. For each operation listed, add a region-tagged example under examples/,
+             copying the structure of an existing example in the matching domain file,
+             and add a matching examples/operation-map.json entry. When an ergonomic
+             helper exists for the operation, point the entry at the helper rather than
+             the raw generated method.
+          2. Write examples that show real usage, not the smallest thing that compiles.
+             An example that passes the coverage check but teaches nothing is a
+             regression, not coverage. Specifically:
+             - if the operation accepts a filter, set at least one meaningful filter
+               field rather than passing an empty request object;
+             - if the operation is paginated, set a page limit;
+             - if the operation is eventually consistent, use the SDK's consistency
+               option the way the neighbouring examples do;
+             - do something with the result — iterate the items, read a field — rather
+               than only showing that the call returns.
+             Match the depth of the surrounding examples in the same file.
+          3. Never hand-edit generated code. If the SDK does not expose an operation
+             yet, regenerate from the spec using the pipeline documented in AGENTS.md
+             and commit the regenerated output in its own commit, separate from the
+             hand-written changes.
+          4. Commit messages must pass commitlint: an allowed Conventional Commits type
+             (feat, chore, docs, ...), lower-case imperative subject, 5-100 characters.
+             Do not use `fix:` for anything that is not a user-facing bug fix, and never
+             add a `BREAKING CHANGE:` marker — both trigger a release.
+          5. Stay inside the example surface: examples/, examples/operation-map.json, the
+             docs this repo requires for a new operation, and regenerated SDK output. Do
+             NOT modify generator sources (hooks/, scripts/, the generator project). If
+             the pipeline itself looks like it needs changing, stop and say so in your
+             final message instead of editing it.
+          6. Commit every change you make and leave the working tree clean — uncommitted
+             work is discarded and fails the run.
+          7. Read AGENTS.md for the build/verification pipeline, then finish by running
+             the exact commands below. They are the gate this workflow applies: a green
+             lint, typecheck or test run does NOT mean they pass. Do not stop until
+             every one of them passes.
+          PROMPT_TAIL
+            # $( ) strips every trailing newline, so the blank line before the
+            # closing instruction is emitted here and does not depend on how
+            # VERIFY_COMMANDS happens to be quoted.
+            printf '%s\n\n' "$(printf '%s' "$VERIFY_COMMANDS" | sed 's/^/      /')"
+            if [ -n "${EXTRA_INSTRUCTIONS//[[:space:]]/}" ]; then
+              echo "Additional repo-specific requirements:"
+              printf '%s\n\n' "$EXTRA_INSTRUCTIONS"
+            fi
+            cat <<'PROMPT_FOOT'
+          Do not push and do not open a pull request — the workflow does that.
+          PROMPT_FOOT
+          } > /tmp/prompt.md
+
+          copilot --yolo -p "$(cat /tmp/prompt.md)" --model "$COPILOT_MODEL"
+
+      # Checking the tree here rather than after verification is the whole point:
+      # this is the only moment at which a dirty tree unambiguously means the
+      # agent left work uncommitted. Run it after the verify commands and it also
+      # catches files those commands regenerate, which previously failed complete
+      # work over a touched lockfile or a re-recorded fixture.
+      - name: Inspect the agent's output
+        id: agent
+        if: steps.setup.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+
+          if [ -n "$(git -c core.quotepath=false status --porcelain --untracked-files=all)" ]; then
+            echo "::error::The agent left uncommitted changes in the working tree; refusing to open a partial PR."
+            git status --short
+            exit 1
+          fi
+
+          if [ "$(git rev-list --count "origin/${BASE}..HEAD")" -eq 0 ]; then
+            echo "::warning::The agent produced no commits; nothing to open a PR for."
+            echo "has-commits=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "has-commits=true" >> "$GITHUB_OUTPUT"
+
+      - name: Verify
+        if: steps.agent.outputs.has-commits == 'true'
+        run: |
+          # `:?` so an empty or unset constant aborts here: `bash -c ""` exits 0,
+          # which would turn a missing gate into a silently passing one.
+          bash -euo pipefail -c "${VERIFY_COMMANDS:?is empty; refusing to run an empty verify gate}"
+
+      # Some verify commands legitimately rewrite tracked files — a lockfile, a
+      # recorded response fixture. Those belong in the PR, so they are committed
+      # here against an explicit allow-list. Anything outside the allow-list is
+      # an unexplained mutation and still fails.
+      - name: Commit artefacts regenerated by verification
+        if: steps.agent.outputs.has-commits == 'true'
+        run: |
+          set -euo pipefail
+
+          git -c core.quotepath=false status --porcelain --untracked-files=all | cut -c4- > /tmp/dirty-paths.txt
+          if [ ! -s /tmp/dirty-paths.txt ]; then
+            echo "Verification left the working tree clean."
+            exit 0
+          fi
+          printf '%s\n' "$VERIFY_ARTIFACTS" > /tmp/verify-artifacts.txt
+
+          allowed=true
+          unexpected=""
+          while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            match=false
+            while IFS= read -r pattern; do
+              [ -n "$pattern" ] || continue
+              # shellcheck disable=SC2254  # the pattern is an intentional glob
+              case "$path" in $pattern) match=true; break ;; esac
+            done < /tmp/verify-artifacts.txt
+            if [ "$match" = false ]; then
+              allowed=false
+              unexpected="${unexpected}  ${path}
+          "
+            fi
+          done < /tmp/dirty-paths.txt
+
+          if [ "$allowed" = false ]; then
+            echo "::error::Verification changed files that are not declared in verify-artifacts:"
+            printf '%s' "$unexpected"
+            echo "Either make the verify commands non-mutating, or add these paths to the workflow's verify-artifacts input."
+            exit 1
+          fi
+
+          # Deliberately not re-running the verify commands afterwards: if a
+          # command's own output changes its next result, that is a build defect
+          # to fix at source, not something to iterate on here.
+          git add -A
+          git commit -m "chore: sync artefacts regenerated by verification"
+          echo "Committed regenerated artefacts."
+
+      - name: Push branch and open pull request
+        id: pr
+        if: steps.agent.outputs.has-commits == 'true'
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+          BRANCH: ${{ steps.setup.outputs.branch }}
+        run: |
+          set -euo pipefail
+
+          git push --force-with-lease \
+            "https://x-access-token:${APP_TOKEN}@github.com/${GH_REPO}.git" \
+            "HEAD:refs/heads/${BRANCH}"
+
+          existing="$(gh pr list --repo "$GH_REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            echo "::notice::Updated existing PR #${existing}."
+            echo "url=$(gh pr view "$existing" --repo "$GH_REPO" --json url --jq '.url')" >> "$GITHUB_OUTPUT"
+            echo "opened=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          title="$(cat /tmp/issue-title.txt)"
+          url="$(gh pr create \
+            --repo "$GH_REPO" \
+            --base "$BASE" \
+            --head "$BRANCH" \
+            --title "feat: add example coverage for ${title#Missing example coverage: }" \
+            --body "Resolves #${ISSUE_NUMBER}.
+
+          Generated by the Copilot CLI in CI (\`agent-example-coverage\` workflow), following AGENTS.md and the repo's example conventions. Coverage check and example build passed before this PR was opened — please still review the example bodies for correctness and idiomatic style.")"
+          echo "url=${url}" >> "$GITHUB_OUTPUT"
+          echo "opened=true" >> "$GITHUB_OUTPUT"
+
+      - name: Report outcome on the issue
+        if: always() && steps.setup.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RESULT: ${{ job.status }}
+          OPENED: ${{ steps.pr.outputs.opened }}
+          PR_URL: ${{ steps.pr.outputs.url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          case "${RESULT}:${OPENED:-false}" in
+            success:true)
+              msg="🤖 Opened ${PR_URL} with example coverage for this issue. The repo's verification commands passed before the PR was opened — please review the example bodies for correctness and idiomatic style." ;;
+            success:false)
+              msg="🤖 I ran but produced no changes. See the [run log](${RUN_URL}) — this one needs a human." ;;
+            *)
+              msg="🤖 My attempt failed — see the [run log](${RUN_URL})." ;;
+          esac
+          gh issue comment "$ISSUE_NUMBER" --repo "$GH_REPO" --body "$msg" \
+            || echo "::warning::Could not comment on #${ISSUE_NUMBER}."

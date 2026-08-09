@@ -6,8 +6,8 @@ Shared infrastructure for Camunda SDK repositories. This repo provides reusable 
 
 | Directory | Purpose |
 |-----------|---------|
-| `.github/workflows/` | Reusable CI workflows (spec bundling, commitlint, integration testing) |
-| `actions/` | Composite GitHub Actions (start Camunda stack, sync snippets, check coverage) |
+| `.github/workflows/` | Reusable CI workflows (spec bundling, commitlint, integration testing, agent example coverage) |
+| `actions/` | Composite GitHub Actions (start Camunda stack, sync snippets, check coverage, set up toolchain) |
 | `docker/` | Shared Docker Compose files for integration testing |
 | `scripts/` | Unified CLI tools (snippet sync, example coverage check, operation detection) |
 | `configs/` | Shared commitlint and semantic-release base configurations |
@@ -66,7 +66,45 @@ jobs:
           operation-map: examples/operation-map.json
 ```
 
-### 6. Shared configs
+### 6. Agent example coverage (reusable workflows)
+
+When the daily coverage check files a "Missing example coverage" issue, these run the
+Copilot CLI against the repo and open a pull request with the examples. The caller owns
+only the triggers, the permissions, and the commands that define "verified" here.
+
+```yaml
+# .github/workflows/agent-example-coverage.yml
+on:
+  issues:
+    types: [labeled]
+
+permissions: {}
+
+jobs:
+  implement:
+    if: github.event.label.name == 'new-operations'
+    permissions:
+      contents: read
+      id-token: write
+      copilot-requests: write
+      issues: write
+    uses: camunda/sdk-infra/.github/workflows/sdk-agent-example-coverage.yml@v1
+    secrets: inherit
+    with:
+      language: go
+      issue-number: ${{ github.event.issue.number }}
+      verify-commands: |
+        make check
+```
+
+A companion `sdk-agent-pr-followup.yml` reacts to feedback on the resulting pull request
+— a `/agent fix` comment, a failing CI run, or a review from another bot.
+
+Declare any tracked file the verify commands legitimately regenerate (a lockfile, a
+recorded fixture) in `verify-artifacts`; anything they touch outside that allow-list
+fails the run rather than being swept into the commit.
+
+### 7. Shared configs
 
 ```js
 // commitlint.config.cjs

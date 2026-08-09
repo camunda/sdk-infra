@@ -1,13 +1,17 @@
 # Scheduled workflow: Daily check for new operations in the upstream spec.
 #
-# Bundles the spec from the default upstream branch, fetches each SDK's
-# operation-map.json from GitHub, and opens tracking issues for any
-# operations not yet covered.
+# Bundles the spec from the default upstream branch and hands it to the reusable
+# `sdk-detect-new-ops` workflow, which compares it against every SDK's
+# operation-map.json and reconciles the tracking issues.
 #
 # Creates:
 #   - A summary issue in sdk-infra with the full cross-SDK coverage table
 #   - Per-SDK issues in each repo that has missing coverage (requires Vault secrets)
 #   - All issues link to each other for traceability
+#
+# The detection logic itself deliberately lives only in sdk-detect-new-ops.yml.
+# This workflow used to carry a second copy of it, which meant adding an SDK or
+# fixing a comparison bug had to be done twice and stayed correct only by luck.
 #
 # Runs daily at 07:00 UTC (weekdays). Can also be triggered manually.
 
@@ -18,17 +22,14 @@ on:
     - cron: '0 7 * * 1-5' # 07:00 UTC, Monday–Friday
   workflow_dispatch: {} # Allow manual trigger
 
-# The summary issue in this repo is created/updated/closed with the default
-# GITHUB_TOKEN, which requires issues:write. Declared explicitly so the workflow
-# still works under read-only default token settings.
-permissions:
-  contents: read
-  issues: write
+permissions: {}
 
 jobs:
-  detect:
+  bundle:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v6
 
@@ -46,335 +47,25 @@ jobs:
             --output-spec current-spec/rest-api.bundle.json \
             --output-metadata current-spec/spec-metadata.json
 
-      - name: Fetch SDK operation maps
-        run: |
-          mkdir -p sdk-maps
-          # Fetch operation-map.json from each SDK repo's default branch
-          for repo in orchestration-cluster-api-js orchestration-cluster-api-python orchestration-cluster-api-csharp; do
-            curl -sfL \
-              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              "https://raw.githubusercontent.com/camunda/${repo}/main/examples/operation-map.json" \
-              -o "sdk-maps/${repo}.json" || echo "{}" > "sdk-maps/${repo}.json"
-          done
-
-      - name: Compare spec against SDK coverage
-        id: diff
-        run: |
-          node -e "
-            const fs = require('fs');
-            const spec = JSON.parse(fs.readFileSync('current-spec/rest-api.bundle.json', 'utf8'));
-
-            // Extract all operations from spec
-            const ops = [];
-            for (const [path, item] of Object.entries(spec.paths || {})) {
-              for (const [method, op] of Object.entries(item)) {
-                if (op.operationId) {
-                  ops.push({ operationId: op.operationId, method: method.toUpperCase(), path, addedIn: op['x-added-in-version'] || null, tag: Array.isArray(op.tags) && op.tags.length ? op.tags[0] : null });
-                }
-              }
-            }
-            console.log('Spec operations: ' + ops.length);
-
-            // Load each SDK's operation-map keys
-            const jsMap = JSON.parse(fs.readFileSync('sdk-maps/orchestration-cluster-api-js.json', 'utf8'));
-            const pyMap = JSON.parse(fs.readFileSync('sdk-maps/orchestration-cluster-api-python.json', 'utf8'));
-            const csMap = JSON.parse(fs.readFileSync('sdk-maps/orchestration-cluster-api-csharp.json', 'utf8'));
-
-            const jsKeys = new Set(Object.keys(jsMap));
-            const pyKeys = new Set(Object.keys(pyMap));
-            const csKeys = new Set(Object.keys(csMap));
-
-            // Python uses snake_case keys
-            function toSnakeCase(name) {
-              return name.replace(/([A-Z]+)([A-Z][a-z])/g, '\$1_\$2')
-                         .replace(/([a-z0-9])([A-Z])/g, '\$1_\$2')
-                         .toLowerCase();
-            }
-
-            // Build per-operation coverage
-            const uncovered = [];
-            for (const op of ops) {
-              const id = op.operationId;
-              const js = jsKeys.has(id);
-              const py = pyKeys.has(toSnakeCase(id));
-              const cs = csKeys.has(id);
-              if (!js || !py || !cs) {
-                uncovered.push({ ...op, js, py, cs });
-              }
-            }
-
-            console.log('Uncovered in at least one SDK: ' + uncovered.length);
-            for (const op of uncovered) {
-              const flags = [op.js ? 'JS:ok' : 'JS:missing', op.py ? 'PY:ok' : 'PY:missing', op.cs ? 'CS:ok' : 'CS:missing'].join(' ');
-              console.log('  ' + op.operationId + ' (' + flags + ')');
-            }
-            fs.writeFileSync('/tmp/uncovered.json', JSON.stringify(uncovered));
-          "
-          echo "uncovered=$(cat /tmp/uncovered.json)" >> $GITHUB_OUTPUT
-
-      # Vault is imported on every run (not just when a gap is found) so the
-      # reconcile step below can also close/comment on cross-repo SDK issues
-      # once coverage is complete. Failure is non-fatal — without the token we
-      # fall back to reconciling only the summary issue in this repo.
-      - name: Import Vault secrets
-        id: vault-secrets
-        uses: hashicorp/vault-action@892a26828f195e65540a40b4768ae4571f51ebfc # v4.0.0
-        continue-on-error: true
+      - uses: actions/upload-artifact@v4
         with:
-          url: ${{ secrets.VAULT_ADDR }}
-          method: approle
-          roleId: ${{ secrets.VAULT_ROLE_ID }}
-          secretId: ${{ secrets.VAULT_SECRET_ID }}
-          secrets: |
-            secret/data/products/onboarding-and-migration/github.com/apps/camunda/camunda-sdk-automation GITHUB_APP_ID;
-            secret/data/products/onboarding-and-migration/github.com/apps/camunda/camunda-sdk-automation GITHUB_APP_PRIVATE_KEY;
-          exportEnv: true
+          name: bundled-spec
+          path: current-spec/
+          retention-days: 1
 
-      - name: Generate GitHub App token
-        id: app-token
-        if: steps.vault-secrets.outcome == 'success'
-        uses: tibdex/github-app-token@3beb63f4bd073e61482598c45c71c1019b59b73a # v2.1.0
-        with:
-          app_id: ${{ env.GITHUB_APP_ID }}
-          private_key: ${{ env.GITHUB_APP_PRIVATE_KEY }}
-
-      # Reconcile tracking issues with current coverage. Runs on every execution
-      # (not just when a gap exists) so issues are created when coverage regresses,
-      # updated as individual SDKs catch up, and closed automatically once an
-      # operation is fully covered everywhere.
-      - name: Reconcile tracking issues
-        uses: actions/github-script@v9
-        env:
-          SDK_ISSUE_TOKEN: ${{ steps.app-token.outputs.token || secrets.SDK_ISSUE_TOKEN }}
-          UNCOVERED: ${{ steps.diff.outputs.uncovered }}
-        with:
-          script: |
-            const uncovered = JSON.parse(process.env.UNCOVERED || '[]');
-
-            const owner = 'camunda';
-            const workflowUrl = 'https://github.com/camunda/sdk-infra/actions/workflows/scheduled-detect-new-ops.yml';
-            const icon = (v) => v ? ':white_check_mark:' : ':x:';
-
-            // `generated`, `pipeline`, and `verify` feed the per-SDK issue
-            // guidance so coding agents follow each repo's conventions (never
-            // hand-edit generated code; regenerate via `pipeline`, then run the
-            // full local check suite via `verify` before opening a PR).
-            const sdkRepos = [
-              { repo: 'orchestration-cluster-api-js',      label: 'JS',     field: 'js',
-                generated: '`src/gen/`',                                    pipeline: '`npm run build`',
-                verify: '`npm run build`' },
-              { repo: 'orchestration-cluster-api-python',  label: 'Python', field: 'py',
-                generated: '`generated/` and `stubs/`',                     pipeline: '`make generate`',
-                verify: '`make generate && make lint && make typecheck && make test`' },
-              { repo: 'orchestration-cluster-api-csharp',  label: 'C#',     field: 'cs',
-                generated: '`src/Camunda.Orchestration.Sdk/Generated/`',    pipeline: '`bash scripts/build.sh`',
-                verify: '`bash scripts/build.sh`' },
-            ];
-
-            // Cross-repo work (per-SDK issues) needs the GitHub App token; without
-            // it we still reconcile the summary issue in this repo.
-            const sdkToken = process.env.SDK_ISSUE_TOKEN;
-            let sdkOctokit = null;
-            if (sdkToken) {
-              // Build a second client authenticated with the cross-repo token by
-              // reusing the Octokit class behind the provided `github` instance,
-              // rather than importing @octokit/rest — that package is not
-              // resolvable from actions/github-script on the Node 24 runner.
-              const SdkOctokit = github.constructor;
-              sdkOctokit = new SdkOctokit({ auth: sdkToken });
-            } else {
-              console.log('No SDK token — reconciling the summary issue only (per-SDK issues left untouched).');
-            }
-
-            // First open issue (not PR) matching the label query, or null.
-            // `labels` is a comma-separated AND filter; `excludeLabel` drops issues
-            // that also carry that label. This keeps per-SDK issues (new-operations)
-            // and the summary (new-operations + sdk-coverage) distinct even when both
-            // live in the same repo — e.g. the reusable workflow called from an SDK repo.
-            async function findOpenIssue(octokit, owner, repo, { labels = 'new-operations', excludeLabel } = {}) {
-              const { data } = await octokit.rest.issues.listForRepo({
-                owner, repo, labels, state: 'open',
-                // Page past the default 30 and sort deterministically so that, if
-                // duplicate tracking issues ever exist, we always act on the oldest.
-                per_page: 100, sort: 'created', direction: 'asc',
-              });
-              return data.find(i =>
-                !i.pull_request &&
-                (!excludeLabel || !i.labels.some(l => (l.name || l) === excludeLabel))
-              ) || null;
-            }
-
-            async function closeWithComment(octokit, owner, repo, issue, comment) {
-              await octokit.rest.issues.createComment({
-                owner, repo, issue_number: issue.number, body: comment,
-              });
-              await octokit.rest.issues.update({
-                owner, repo, issue_number: issue.number, state: 'closed',
-              });
-            }
-
-            const sdkIssueLinks = [];      // for the summary body
-            const freshlyCreated = [];     // {repo, number} of SDK issues created this run
-
-            // --- Per-SDK reconciliation ---
-            if (sdkOctokit) {
-              for (const sdk of sdkRepos) {
-                const missing = uncovered.filter(op => !op[sdk.field]);
-                let existing;
-                try {
-                  existing = await findOpenIssue(sdkOctokit, owner, sdk.repo, { excludeLabel: 'sdk-coverage' });
-                } catch (e) {
-                  console.log(`${sdk.label}: failed to list issues: ${e.message}`);
-                  continue;
-                }
-
-                // Fully covered: close any open issue, otherwise nothing to do.
-                if (!missing.length) {
-                  if (existing) {
-                    try {
-                      await closeWithComment(sdkOctokit, owner, sdk.repo, existing,
-                        'All listed operations now have example coverage — closing automatically.');
-                      console.log(`${sdk.label}: coverage complete — closed ${existing.html_url}`);
-                    } catch (e) {
-                      console.log(`${sdk.label}: failed to close issue: ${e.message}`);
-                    }
-                  } else {
-                    console.log(`${sdk.label}: fully covered — nothing to do.`);
-                  }
-                  continue;
-                }
-
-                // Still missing: create or update the issue to reflect the current list.
-                const fmt = (v) => (v ? '`' + v + '`' : '—');
-                const rows = missing.map(op =>
-                  `| \`${op.operationId}\` | \`${op.method}\` | \`${op.path}\` | ${fmt(op.addedIn)} | ${fmt(op.tag)} |`
-                ).join('\n');
-                const body = [
-                  '## Operations missing example coverage',
-                  '',
-                  '| Operation | Method | Path | Added in | Tag |',
-                  '|-----------|--------|------|----------|-----|',
-                  rows,
-                  '',
-                  'Add an `operation-map.json` entry and example code for each operation listed above.',
-                  '',
-                  '### How to resolve (coding agents: follow this exactly)',
-                  '',
-                  '1. **Read `AGENTS.md` in this repo before writing any code** and follow it strictly. Also read `.github/prompts/add-missing-examples.prompt.md` if present — it documents the example conventions in detail.',
-                  `2. **Never hand-edit generated code** (${sdk.generated}). If the SDK does not yet expose an operation, regenerate from the spec by running the repo pipeline ${sdk.pipeline}, and commit the regenerated output in a separate commit from hand-written changes (see AGENTS.md for the two-commit rule).`,
-                  '3. For each operation: add a region-tagged example in `examples/`, copying the exact structure of an existing example in the matching domain file, and add an `examples/operation-map.json` entry referencing it. **When an ergonomic helper method exists for the operation, point the entry at the helper** (e.g. a file-path deploy helper), not the raw generated method — users should see the best developer experience by default.',
-                  '4. **Commit messages must pass commitlint** (Conventional Commits): an allowed type (`feat`, `chore`, `docs`, ...), lower-case imperative subject, 5-100 characters. Do not use `fix:` for anything that is not a user-facing bug fix, and never add `BREAKING CHANGE:` markers - both trigger releases.',
-                  `5. Before opening the PR, run ${sdk.verify} locally and make sure it passes end to end — it regenerates the SDK, type-checks the examples, and runs the repo's build, coverage, and test checks.`,
-                  '6. **Regenerating pulls the latest upstream spec**, so the build may surface changes unrelated to your example — new required fields, renamed types, or a stale API baseline. Resolving that drift (for example refreshing a public-API baseline) is expected and belongs in the same PR: a small example change can legitimately require a baseline or test update.',
-                  '',
-                  `_Auto-generated by the [daily new operations check](${workflowUrl}). This issue is updated automatically as coverage changes and closed once every listed operation is covered._`,
-                ].join('\n');
-                const title = `Missing example coverage: ${missing.map(o => o.operationId).join(', ')}`;
-
-                try {
-                  if (existing) {
-                    if (existing.title !== title || existing.body !== body) {
-                      await sdkOctokit.rest.issues.update({
-                        owner, repo: sdk.repo, issue_number: existing.number, title, body,
-                      });
-                      console.log(`${sdk.label}: updated ${existing.html_url}`);
-                    } else {
-                      console.log(`${sdk.label}: already up to date (${existing.html_url}).`);
-                    }
-                    sdkIssueLinks.push(`- **${sdk.label}**: ${existing.html_url}`);
-                  } else {
-                    const { data: created } = await sdkOctokit.rest.issues.create({
-                      owner, repo: sdk.repo, title, body, labels: ['new-operations'],
-                    });
-                    console.log(`${sdk.label}: created ${created.html_url}`);
-                    sdkIssueLinks.push(`- **${sdk.label}**: ${created.html_url}`);
-                    freshlyCreated.push({ repo: sdk.repo, number: created.number });
-                  }
-                } catch (e) {
-                  console.log(`${sdk.label}: failed to create/update issue: ${e.message}`);
-                }
-              }
-            } else {
-              for (const sdk of sdkRepos) {
-                const missing = uncovered.filter(op => !op[sdk.field]);
-                if (missing.length) console.log(`${sdk.label}: ${missing.length} missing, but no token to create/update issue.`);
-              }
-            }
-
-            // --- Summary issue in sdk-infra (default repo token) ---
-            let summary;
-            try {
-              summary = await findOpenIssue(github, context.repo.owner, context.repo.repo, { labels: 'new-operations,sdk-coverage' });
-            } catch (e) {
-              summary = null;
-              console.log(`Failed to list summary issues: ${e.message}`);
-            }
-
-            // No gaps anywhere: close the summary if one is open, then stop.
-            if (!uncovered.length) {
-              if (summary) {
-                try {
-                  await closeWithComment(github, context.repo.owner, context.repo.repo, summary,
-                    'All operations now have SDK example coverage across JS, Python, and C# — closing automatically.');
-                  console.log(`Summary issue: coverage complete — closed ${summary.html_url}`);
-                } catch (e) {
-                  console.log(`Summary issue: failed to close ${summary.html_url}: ${e.message}`);
-                }
-              } else {
-                console.log('No coverage gaps and no open summary issue — nothing to do.');
-              }
-              return;
-            }
-
-            const rows = uncovered.map(op =>
-              `| \`${op.operationId}\` | \`${op.method}\` | \`${op.path}\` | ${icon(op.js)} | ${icon(op.py)} | ${icon(op.cs)} |`
-            ).join('\n');
-            const linkedSection = sdkIssueLinks.length
-              ? '\n\n### Linked SDK issues\n\n' + sdkIssueLinks.join('\n')
-              : '';
-            const summaryBody = [
-              '## Operations missing SDK example coverage',
-              '',
-              '| Operation | Method | Path | JS | Python | C# |',
-              '|-----------|--------|------|----|--------|----|',
-              rows,
-              '',
-              'Each SDK repo should add an `operation-map.json` entry and example code for uncovered operations.',
-              linkedSection,
-              '',
-              '_Auto-generated by the daily new operations check. Coverage is determined by each SDK\'s `examples/operation-map.json`, and this issue is updated automatically as coverage changes (and closed once every operation is covered)._',
-            ].join('\n');
-            const summaryTitle = `SDK coverage gaps: ${uncovered.map(o => o.operationId).join(', ')}`;
-
-            if (summary) {
-              if (summary.title !== summaryTitle || summary.body !== summaryBody) {
-                await github.rest.issues.update({
-                  owner: context.repo.owner, repo: context.repo.repo,
-                  issue_number: summary.number, title: summaryTitle, body: summaryBody,
-                });
-                console.log(`Summary issue: updated ${summary.html_url}`);
-              } else {
-                console.log(`Summary issue: already up to date (${summary.html_url}).`);
-              }
-            } else {
-              const { data: created } = await github.rest.issues.create({
-                owner: context.repo.owner, repo: context.repo.repo,
-                title: summaryTitle, body: summaryBody, labels: ['new-operations', 'sdk-coverage'],
-              });
-              summary = created;
-              console.log(`Summary issue: created ${created.html_url}`);
-            }
-
-            // --- Back-link only the SDK issues created this run, to avoid daily comment spam ---
-            if (sdkOctokit && freshlyCreated.length) {
-              for (const { repo, number } of freshlyCreated) {
-                try {
-                  await sdkOctokit.rest.issues.createComment({
-                    owner, repo, issue_number: number,
-                    body: `Cross-SDK summary: ${summary.html_url}`,
-                  });
-                } catch (e) {
-                  console.log(`${repo}: failed to back-link: ${e.message}`);
-                }
-              }
-            }
+  detect:
+    needs: bundle
+    # The summary issue in this repo is created/updated/closed with the default
+    # GITHUB_TOKEN, which requires issues:write. Declared explicitly so the
+    # workflow still works under read-only default token settings.
+    permissions:
+      contents: read
+      issues: write
+    uses: ./.github/workflows/sdk-detect-new-ops.yml
+    with:
+      spec-artifact: bundled-spec
+    secrets:
+      vault-addr: ${{ secrets.VAULT_ADDR }}
+      vault-role-id: ${{ secrets.VAULT_ROLE_ID }}
+      vault-secret-id: ${{ secrets.VAULT_SECRET_ID }}
+      sdk-issue-token: ${{ secrets.SDK_ISSUE_TOKEN }}

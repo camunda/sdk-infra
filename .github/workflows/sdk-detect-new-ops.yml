@@ -68,11 +68,16 @@ jobs:
           path: current-spec/
 
       - name: Fetch SDK operation maps
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           mkdir -p sdk-maps
-          for repo in orchestration-cluster-api-js orchestration-cluster-api-python orchestration-cluster-api-csharp; do
+          for repo in orchestration-cluster-api-js orchestration-cluster-api-python \
+                      orchestration-cluster-api-csharp orchestration-cluster-api-go \
+                      orchestration-cluster-api-rust; do
             curl -sfL \
-              -H "Authorization: token ${{ github.token }}" \
+              -H "Authorization: token ${GH_TOKEN}" \
               "https://raw.githubusercontent.com/camunda/${repo}/main/examples/operation-map.json" \
               -o "sdk-maps/${repo}.json" || echo "{}" > "sdk-maps/${repo}.json"
           done
@@ -94,34 +99,40 @@ jobs:
             }
             console.log('Spec operations: ' + ops.length);
 
-            const jsMap = JSON.parse(fs.readFileSync('sdk-maps/orchestration-cluster-api-js.json', 'utf8'));
-            const pyMap = JSON.parse(fs.readFileSync('sdk-maps/orchestration-cluster-api-python.json', 'utf8'));
-            const csMap = JSON.parse(fs.readFileSync('sdk-maps/orchestration-cluster-api-csharp.json', 'utf8'));
-
-            const jsKeys = new Set(Object.keys(jsMap));
-            const pyKeys = new Set(Object.keys(pyMap));
-            const csKeys = new Set(Object.keys(csMap));
-
             function toSnakeCase(name) {
               return name.replace(/([A-Z]+)([A-Z][a-z])/g, '\$1_\$2')
                          .replace(/([a-z0-9])([A-Z])/g, '\$1_\$2')
                          .toLowerCase();
             }
 
+            // \`field\` is the per-operation flag name carried through to the issue
+            // bodies; \`key\` maps an operationId to the form that SDK's
+            // operation-map.json is keyed by.
+            const sdks = [
+              { field: 'js', label: 'JS',     repo: 'orchestration-cluster-api-js',     key: (id) => id },
+              { field: 'py', label: 'PY',     repo: 'orchestration-cluster-api-python', key: toSnakeCase },
+              { field: 'cs', label: 'CS',     repo: 'orchestration-cluster-api-csharp', key: (id) => id },
+              { field: 'go', label: 'GO',     repo: 'orchestration-cluster-api-go',     key: (id) => id },
+              { field: 'rs', label: 'RS',     repo: 'orchestration-cluster-api-rust',   key: (id) => id },
+            ];
+            for (const sdk of sdks) {
+              sdk.keys = new Set(Object.keys(JSON.parse(fs.readFileSync('sdk-maps/' + sdk.repo + '.json', 'utf8'))));
+            }
+
             const uncovered = [];
             for (const op of ops) {
-              const id = op.operationId;
-              const js = jsKeys.has(id);
-              const py = pyKeys.has(toSnakeCase(id));
-              const cs = csKeys.has(id);
-              if (!js || !py || !cs) {
-                uncovered.push({ ...op, js, py, cs });
+              const flags = {};
+              let complete = true;
+              for (const sdk of sdks) {
+                flags[sdk.field] = sdk.keys.has(sdk.key(op.operationId));
+                if (!flags[sdk.field]) complete = false;
               }
+              if (!complete) uncovered.push({ ...op, ...flags });
             }
 
             console.log('Uncovered in at least one SDK: ' + uncovered.length);
             for (const op of uncovered) {
-              const flags = [op.js ? 'JS:ok' : 'JS:missing', op.py ? 'PY:ok' : 'PY:missing', op.cs ? 'CS:ok' : 'CS:missing'].join(' ');
+              const flags = sdks.map(s => s.label + (op[s.field] ? ':ok' : ':missing')).join(' ');
               console.log('  ' + op.operationId + ' (' + flags + ')');
             }
             fs.writeFileSync('/tmp/uncovered.json', JSON.stringify(uncovered));
@@ -185,6 +196,12 @@ jobs:
               { repo: 'orchestration-cluster-api-csharp',  label: 'C#',     field: 'cs',
                 generated: '`src/Camunda.Orchestration.Sdk/Generated/`',    pipeline: '`bash scripts/build.sh`',
                 verify: '`bash scripts/build.sh`' },
+              { repo: 'orchestration-cluster-api-go',      label: 'Go',     field: 'go',
+                generated: '`client/`, `pb/`, and `facade_generated.go`',   pipeline: '`make generate`',
+                verify: '`make check`' },
+              { repo: 'orchestration-cluster-api-rust',    label: 'Rust',   field: 'rs',
+                generated: '`client/`',                                     pipeline: '`make generate`',
+                verify: '`make check`' },
             ];
 
             // Cross-repo work (per-SDK issues) needs the GitHub App token; without
@@ -331,7 +348,7 @@ jobs:
               if (summary) {
                 try {
                   await closeWithComment(github, context.repo.owner, context.repo.repo, summary,
-                    'All operations now have SDK example coverage across JS, Python, and C# — closing automatically.');
+                    `All operations now have SDK example coverage across ${sdkRepos.map(s => s.label).join(', ')} — closing automatically.`);
                   console.log(`Summary issue: coverage complete — closed ${summary.html_url}`);
                 } catch (e) {
                   console.log(`Summary issue: failed to close ${summary.html_url}: ${e.message}`);
@@ -343,7 +360,8 @@ jobs:
             }
 
             const rows = uncovered.map(op =>
-              `| \`${op.operationId}\` | \`${op.method}\` | \`${op.path}\` | ${icon(op.js)} | ${icon(op.py)} | ${icon(op.cs)} |`
+              `| \`${op.operationId}\` | \`${op.method}\` | \`${op.path}\` | ` +
+              sdkRepos.map(s => icon(op[s.field])).join(' | ') + ' |'
             ).join('\n');
             const linkedSection = sdkIssueLinks.length
               ? '\n\n### Linked SDK issues\n\n' + sdkIssueLinks.join('\n')
@@ -351,8 +369,8 @@ jobs:
             const summaryBody = [
               '## Operations missing SDK example coverage',
               '',
-              '| Operation | Method | Path | JS | Python | C# |',
-              '|-----------|--------|------|----|--------|----|',
+              '| Operation | Method | Path | ' + sdkRepos.map(s => s.label).join(' | ') + ' |',
+              '|-----------|--------|------|' + sdkRepos.map(() => '----|').join(''),
               rows,
               '',
               'Each SDK repo should add an `operation-map.json` entry and example code for uncovered operations.',

@@ -1,0 +1,99 @@
+# Composite action: Set up the language toolchain for a Camunda SDK repo.
+#
+# The agent workflows are otherwise identical across the five SDK repos; the
+# toolchain is the one part that genuinely differs. Keeping it here means a
+# caller only has to name its language rather than repeat a setup block.
+#
+# Usage:
+#   - uses: camunda/sdk-infra/actions/setup-sdk-toolchain@v1
+#     with:
+#       language: python
+
+name: Set up SDK toolchain
+description: Install the language toolchain and project dependencies for a Camunda SDK repo.
+
+inputs:
+  language:
+    description: 'SDK language: js, python, csharp, go, or rust.'
+    required: true
+  install-dependencies:
+    description: 'Install project dependencies after setting up the toolchain.'
+    required: false
+    default: 'true'
+  node-version:
+    description: 'Node.js version. Node is installed for every language.'
+    required: false
+    default: '22'
+  python-version:
+    description: >-
+      Python version. Installed for the python SDK, and for the go and rust SDKs
+      whose Makefiles shell out to python3 for coverage and README-snippet checks.
+    required: false
+    default: '3.12'
+  dotnet-version:
+    description: '.NET SDK version, used by the csharp SDK.'
+    required: false
+    default: '8.0.x'
+
+runs:
+  using: composite
+  steps:
+    # Fail before any toolchain work, so a typo surfaces as a clear error rather
+    # than as a job that quietly installs nothing and fails much later.
+    - name: Validate the language input
+      if: ${{ !contains(fromJSON('["js","python","csharp","go","rust"]'), inputs.language) }}
+      shell: bash
+      env:
+        LANGUAGE: ${{ inputs.language }}
+      run: |
+        echo "::error::Unsupported language '${LANGUAGE}'. Expected one of: js, python, csharp, go, rust."
+        exit 1
+
+    # Node is installed for every language, not just the JS SDK: the Copilot CLI
+    # and several shared scripts are npm-distributed, so Node is a dependency of
+    # the workflow itself rather than of any one SDK.
+    - uses: actions/setup-node@v6
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - if: inputs.language == 'python'
+      uses: astral-sh/setup-uv@v7
+
+    # Not only for the python SDK: the go and rust Makefiles run
+    # `python3 scripts/…` for their coverage and README-snippet checks, and the
+    # rust verify gate calls the shared coverage script directly. Pinning the
+    # version beats relying on whatever the runner image happens to preinstall.
+    - if: contains(fromJSON('["python","go","rust"]'), inputs.language)
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - if: inputs.language == 'csharp'
+      uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: ${{ inputs.dotnet-version }}
+
+    - if: inputs.language == 'go'
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: go.mod
+
+    # rust-toolchain.toml pins the channel and the rustfmt/clippy components.
+    # `rustup show` is the documented way to make rustup honour that file and
+    # install on demand, so the toolchain is warm before the agent starts rather
+    # than being installed mid-run by the first cargo invocation.
+    - if: inputs.language == 'rust'
+      shell: bash
+      run: rustup show
+
+    - if: inputs.install-dependencies == 'true' && inputs.language == 'js'
+      shell: bash
+      run: npm ci
+
+    - if: inputs.install-dependencies == 'true' && inputs.language == 'python'
+      shell: bash
+      run: uv sync --all-extras --dev
+
+    - if: inputs.install-dependencies == 'true' && inputs.language == 'go'
+      shell: bash
+      run: go mod download
