@@ -1,0 +1,4 @@
+# Normalise every text file to LF in the index and in the working tree.
+# Without this, editors on Windows silently commit CRLF, which turns a
+# four-line change into a whole-file diff and hides the real edit.
+* text=auto eol=lf
