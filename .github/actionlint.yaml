@@ -1,0 +1,16 @@
+# actionlint configuration — https://github.com/rhysd/actionlint
+#
+# Run locally with:
+#   actionlint          # from the repository root
+#
+# actionlint bundles shellcheck for `run:` blocks, so install shellcheck too or
+# the shell scripts go unchecked.
+
+paths:
+  .github/workflows/**/*.{yml,yaml}:
+    ignore:
+      # `copilot-requests` is a real permission scope (it is what lets the
+      # GitHub Copilot CLI authenticate with the built-in GITHUB_TOKEN), but it
+      # is newer than actionlint's hard-coded scope list, so actionlint reports
+      # it as unknown. Remove this once actionlint knows the scope.
+      - 'unknown permission scope "copilot-requests"'

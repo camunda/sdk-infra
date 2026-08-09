@@ -19,6 +19,8 @@ Downstream consumers — changes here affect all of them, so test thoroughly:
 - [`orchestration-cluster-api-js`](https://github.com/camunda/orchestration-cluster-api-js) — TypeScript SDK
 - [`orchestration-cluster-api-csharp`](https://github.com/camunda/orchestration-cluster-api-csharp) — C# SDK
 - [`orchestration-cluster-api-python`](https://github.com/camunda/orchestration-cluster-api-python) — Python SDK
+- [`orchestration-cluster-api-go`](https://github.com/camunda/orchestration-cluster-api-go) — Go SDK
+- [`orchestration-cluster-api-rust`](https://github.com/camunda/orchestration-cluster-api-rust) — Rust SDK
 - [`c8ctl`](https://github.com/camunda/c8ctl) — CLI (transitive, via JS SDK)
 
 **Path map:**
@@ -30,8 +32,8 @@ Downstream consumers — changes here affect all of them, so test thoroughly:
 | `schema/` | JSON schemas (e.g. `operation-map.schema.json`) — published to npm |
 | `docker/` | Shared Docker Compose files for integration testing — published to npm |
 | `policies/` | Canonical contributor guidelines (`AGENTS.md`) — published to npm |
-| `actions/` | Composite GitHub Actions (start-camunda, sync-readme-snippets, check-example-coverage) — **not** published to npm |
-| `.github/workflows/` | Reusable CI workflows (spec bundling, commitlint, spec-ref guard, detect new ops) — consumed via `uses:` |
+| `actions/` | Composite GitHub Actions (start-camunda, sync-readme-snippets, check-example-coverage, setup-sdk-toolchain) — **not** published to npm |
+| `.github/workflows/` | Reusable CI workflows (spec bundling, commitlint, spec-ref guard, detect new ops, agent example coverage) — consumed via `uses:` |
 
 | `MIGRATION.md` | Step-by-step guide for adopting sdk-infra in existing SDK repos |
 
@@ -80,7 +82,9 @@ The currently promoted stable major is set via the `CAMUNDA_SDK_CURRENT_STABLE_M
 | `sdk-breaking-change-guard.yml` | Fail PR CI when commits contain `BREAKING CHANGE:` notes in body/footer that would trigger a major version bump; bypassed by the `breaking-change-approved` label |
 | `sdk-spec-ref-guard.yml` | Validate `SPEC_REF` overrides with expiry |
 | `sdk-detect-new-ops.yml` | Detect operations missing SDK example coverage; opens per-SDK issues and a cross-linked summary (requires `SDK_ISSUE_TOKEN` secret for cross-repo issues) |
-| `scheduled-detect-new-ops.yml` | Scheduled daily check for SDK coverage gaps with cross-repo issue creation |
+| `scheduled-detect-new-ops.yml` | Scheduled daily check for SDK coverage gaps with cross-repo issue creation. A thin caller: it bundles the spec, then delegates to `sdk-detect-new-ops.yml` |
+| `sdk-agent-example-coverage.yml` | Resolve a `new-operations` coverage issue by running the Copilot CLI and opening a PR. Callers supply `language`, `issue-number` and `verify-commands` |
+| `sdk-agent-pr-followup.yml` | React to feedback on an agent-authored PR (`/agent fix` comment, failing CI, bot review) by running the Copilot CLI on the same branch |
 | `sdk-slack-notify.yml` | Send a Slack notification when a release/publish workflow fails (requires `SLACK_SDK_ALERTS` repo secret) |
 | `sdk-slack-community-notify.yml` | Notify Slack about community issues/PRs and dependency-bot PRs. With `slack-bot-token` + `slack-channel-id` it posts via `chat.postMessage`, records the message reference on the PR, and adds a `:white_check_mark:` reaction when that PR is merged; falls back to the incoming webhook (no reaction) when no bot token is set. Callers must grant `issues: write` and `pull-requests: write` |
 
@@ -92,6 +96,29 @@ The currently promoted stable major is set via the `CAMUNDA_SDK_CURRENT_STABLE_M
 | `actions/stop-camunda/` | Stop and clean up Docker stack |
 | `actions/sync-readme-snippets/` | Sync README code blocks from source-of-truth example files |
 | `actions/check-example-coverage/` | Verify operation-map coverage against OpenAPI spec |
+| `actions/setup-sdk-toolchain/` | Install the language toolchain (and project dependencies) for an SDK repo, given `language: js\|python\|csharp\|go\|rust` |
+
+#### The agent workflows
+
+`sdk-agent-example-coverage.yml` and `sdk-agent-pr-followup.yml` are the shared
+implementation behind each SDK repo's `.github/workflows/agent-*.yml`. Those callers
+are deliberately thin — they own only the triggers, the job permissions, the language,
+and the `verify-commands` that define "verified" for that repo.
+
+Three design points are load-bearing and should not be undone casually:
+
+- **Ordering.** The run is `agent → inspect → verify → reconcile → push`. Inspecting the
+  working tree *before* verification is the only moment at which a dirty tree
+  unambiguously means the agent left work uncommitted; running verify first conflates
+  that with a verify command regenerating a lockfile or a recorded fixture.
+- **`verify-artifacts`.** Files the verify commands are allowed to regenerate are
+  declared as globs. Anything they touch outside that allow-list fails the run rather
+  than being swept into the commit.
+- **`sdk-infra-ref`.** `uses:` cannot take an expression for its ref, so a branch build
+  of a reusable workflow would still load `@v1` composite actions. The workflows instead
+  check `camunda/sdk-infra` out at `inputs.sdk-infra-ref` into `.sdk-infra/` and use it
+  locally. Set `sdk-infra-ref` in a caller to test a branch end to end. The checkout is
+  added to `.git/info/exclude` so it does not register as an untracked file.
 
 ### Build & test
 
@@ -111,11 +138,24 @@ node -e "require('./configs/commitlint.config.base.cjs')"
 # Run scripts locally (Python 3.10+)
 python3 scripts/sync-readme-snippets.py --help
 python3 scripts/check-example-coverage.py --help
+
+# Lint the workflows (schema + embedded bash)
+actionlint
 ```
 
 Tests live in `tests/` and use `node:test` (zero extra dependencies). They cover the release config helper functions and verify the branch array output under every branch scenario (main, current stable, older stable, missing env var). The semantic-release invariant (≥1 plain release branch) is asserted for all scenarios.
 
 Full integration validation still happens in downstream SDK repos via their CI pipelines.
+
+#### Workflow linting
+
+Most of this repo is embedded bash inside reusable workflows that five SDK repos depend on, so the workflows are gated by [actionlint](https://github.com/rhysd/actionlint) in `ci.yml` (job `lint-workflows`). actionlint checks the workflow schema, the `${{ }}` expression syntax, and — via bundled [shellcheck](https://www.shellcheck.net/) — every `run:` block.
+
+- **shellcheck must be installed** alongside actionlint. Without it, actionlint silently skips the shell scripts and the gate degrades to a schema-only check. CI asserts `shellcheck --version` for exactly this reason.
+- **Composite actions under `actions/` are not linted.** actionlint only understands workflow files, so `run:` blocks in `actions/*/action.yml` go unchecked. Review those by hand.
+- **`.github/actionlint.yaml`** holds the ignore list. It currently suppresses one false positive: actionlint's permission-scope list predates `copilot-requests`.
+- Both the CI job and local runs use the same pinned release (`1.7.12`, SHA256-verified on download), so local results match CI.
+
 
 ### Versioning
 

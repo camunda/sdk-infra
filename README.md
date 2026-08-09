@@ -6,8 +6,8 @@ Shared infrastructure for Camunda SDK repositories. This repo provides reusable 
 
 | Directory | Purpose |
 |-----------|---------|
-| `.github/workflows/` | Reusable CI workflows (spec bundling, commitlint, integration testing) |
-| `actions/` | Composite GitHub Actions (start Camunda stack, sync snippets, check coverage) |
+| `.github/workflows/` | Reusable CI workflows (spec bundling, commitlint, integration testing, agent example coverage) |
+| `actions/` | Composite GitHub Actions (start Camunda stack, sync snippets, check coverage, set up toolchain) |
 | `docker/` | Shared Docker Compose files for integration testing |
 | `scripts/` | Unified CLI tools (snippet sync, example coverage check, operation detection) |
 | `configs/` | Shared commitlint and semantic-release base configurations |
@@ -66,14 +66,52 @@ jobs:
           operation-map: examples/operation-map.json
 ```
 
-### 6. Shared configs
+### 6. Agent example coverage (reusable workflows)
+
+When the daily coverage check files a "Missing example coverage" issue, these run the
+Copilot CLI against the repo and open a pull request with the examples. The caller owns
+only the triggers, the permissions, and the commands that define "verified" here.
+
+```yaml
+# .github/workflows/agent-example-coverage.yml
+on:
+  issues:
+    types: [labeled]
+
+permissions: {}
+
+jobs:
+  implement:
+    if: github.event.label.name == 'new-operations'
+    permissions:
+      contents: read
+      id-token: write
+      copilot-requests: write
+      issues: write
+    uses: camunda/sdk-infra/.github/workflows/sdk-agent-example-coverage.yml@v1
+    secrets: inherit
+    with:
+      language: go
+      issue-number: ${{ github.event.issue.number }}
+      verify-commands: |
+        make check
+```
+
+A companion `sdk-agent-pr-followup.yml` reacts to feedback on the resulting pull request
+— a `/agent fix` comment, a failing CI run, or a review from another bot.
+
+Declare any tracked file the verify commands legitimately regenerate (a lockfile, a
+recorded fixture) in `verify-artifacts`; anything they touch outside that allow-list
+fails the run rather than being swept into the commit.
+
+### 7. Shared configs
 
 ```js
 // commitlint.config.cjs
-module.exports = require('@camunda/sdk-infra/configs/commitlint.config.base.cjs');
+module.exports = require('@camunda8/sdk-infra/configs/commitlint.config.base.cjs');
 
 // release.config.cjs
-const base = require('@camunda/sdk-infra/configs/release.config.base.cjs');
+const base = require('@camunda8/sdk-infra/configs/release.config.base.cjs');
 module.exports = { ...base, plugins: [...base.plugins, /* language-specific */] };
 ```
 
@@ -91,9 +129,18 @@ python3 scripts/check-example-coverage.py --spec ../my-sdk/external-spec/bundled
 
 ## Versioning
 
-This repo uses tags (`v1`, `v1.1.0`, etc.) to version reusable workflows and actions. SDK repos pin to a major version tag (e.g., `@v1`) for stability.
+The two distribution channels are versioned separately.
 
-Breaking changes increment the major version. Additive changes (new inputs, new actions) are backwards-compatible within a major version.
+- **npm package** (`@camunda8/sdk-infra`) — released by semantic-release from `main`. The
+  version in `package.json` is a sentinel and is never edited by hand.
+- **Reusable workflows and composite actions** — the moving major tag `v1` only. SDK repos
+  pin to it (`@v1`), and the tag is moved forward once a change lands on `main`. A breaking
+  change to a workflow's or action's interface gets a new major tag (`v2`) and consumers are
+  migrated deliberately; additive changes stay within the current major.
+
+The two channels share one tag namespace, so `v1` is the only tag ever created by hand.
+`vX.Y.Z` belongs to semantic-release — see AGENTS.md for why a manual one silently costs an
+npm release.
 
 ## Language-specific notes
 
