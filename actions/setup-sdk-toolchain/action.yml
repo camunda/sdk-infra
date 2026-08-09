@@ -10,14 +10,17 @@
 #       language: python
 
 name: Set up SDK toolchain
-description: Install the language toolchain and project dependencies for a Camunda SDK repo.
+description: Install the language toolchain for a Camunda SDK repo, and optionally its dependencies.
 
 inputs:
   language:
     description: 'SDK language: js, python, csharp, go, or rust.'
     required: true
   install-dependencies:
-    description: 'Install project dependencies after setting up the toolchain.'
+    description: >-
+      Prefetch project dependencies after setting up the toolchain. Only js, python and go
+      have a prefetch step (npm ci, uv sync, go mod download); for csharp and rust this is a
+      no-op, because dotnet and cargo restore implicitly on the first build.
     required: false
     default: 'true'
   node-version:

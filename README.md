@@ -108,10 +108,10 @@ fails the run rather than being swept into the commit.
 
 ```js
 // commitlint.config.cjs
-module.exports = require('@camunda/sdk-infra/configs/commitlint.config.base.cjs');
+module.exports = require('@camunda8/sdk-infra/configs/commitlint.config.base.cjs');
 
 // release.config.cjs
-const base = require('@camunda/sdk-infra/configs/release.config.base.cjs');
+const base = require('@camunda8/sdk-infra/configs/release.config.base.cjs');
 module.exports = { ...base, plugins: [...base.plugins, /* language-specific */] };
 ```
 
@@ -129,9 +129,18 @@ python3 scripts/check-example-coverage.py --spec ../my-sdk/external-spec/bundled
 
 ## Versioning
 
-This repo uses tags (`v1`, `v1.1.0`, etc.) to version reusable workflows and actions. SDK repos pin to a major version tag (e.g., `@v1`) for stability.
+The two distribution channels are versioned separately.
 
-Breaking changes increment the major version. Additive changes (new inputs, new actions) are backwards-compatible within a major version.
+- **npm package** (`@camunda8/sdk-infra`) — released by semantic-release from `main`. The
+  version in `package.json` is a sentinel and is never edited by hand.
+- **Reusable workflows and composite actions** — the moving major tag `v1` only. SDK repos
+  pin to it (`@v1`), and the tag is moved forward once a change lands on `main`. A breaking
+  change to a workflow's or action's interface gets a new major tag (`v2`) and consumers are
+  migrated deliberately; additive changes stay within the current major.
+
+The two channels share one tag namespace, so `v1` is the only tag ever created by hand.
+`vX.Y.Z` belongs to semantic-release — see AGENTS.md for why a manual one silently costs an
+npm release.
 
 ## Language-specific notes
 
