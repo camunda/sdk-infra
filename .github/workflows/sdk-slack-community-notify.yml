@@ -179,16 +179,20 @@ jobs:
           PR_ASSOC: ${{ github.event.pull_request.author_association }}
         run: |
           if [ "$EVENT_NAME" = "issues" ]; then
-            echo "event_type=issue" >> $GITHUB_OUTPUT
-            echo "title=$ISSUE_TITLE" >> $GITHUB_OUTPUT
-            echo "url=$ISSUE_URL" >> $GITHUB_OUTPUT
-            echo "author=$ISSUE_AUTHOR" >> $GITHUB_OUTPUT
+            {
+              echo "event_type=issue"
+              echo "title=$ISSUE_TITLE"
+              echo "url=$ISSUE_URL"
+              echo "author=$ISSUE_AUTHOR"
+            } >> "$GITHUB_OUTPUT"
             EVENT_ASSOC="$ISSUE_ASSOC"
           else
-            echo "event_type=pr" >> $GITHUB_OUTPUT
-            echo "title=$PR_TITLE" >> $GITHUB_OUTPUT
-            echo "url=$PR_URL" >> $GITHUB_OUTPUT
-            echo "author=$PR_AUTHOR" >> $GITHUB_OUTPUT
+            {
+              echo "event_type=pr"
+              echo "title=$PR_TITLE"
+              echo "url=$PR_URL"
+              echo "author=$PR_AUTHOR"
+            } >> "$GITHUB_OUTPUT"
             EVENT_ASSOC="$PR_ASSOC"
           fi
 
@@ -209,7 +213,7 @@ jobs:
               "renovate[bot]")   CATEGORY="dependency-bot"; BOT_NAME="Renovate" ;;
             esac
           fi
-          echo "bot_name=$BOT_NAME" >> $GITHUB_OUTPUT
+          echo "bot_name=$BOT_NAME" >> "$GITHUB_OUTPUT"
 
           # Skip other bots
           if [ "$CATEGORY" = "unknown" ]; then
@@ -243,7 +247,7 @@ jobs:
             fi
           fi
 
-          echo "category=$CATEGORY" >> $GITHUB_OUTPUT
+          echo "category=$CATEGORY" >> "$GITHUB_OUTPUT"
 
   notify-community:
     needs: classify
@@ -296,9 +300,11 @@ jobs:
                 }
               }]
             }')
-          echo "json<<ENDOFPAYLOAD" >> $GITHUB_OUTPUT
-          echo "$PAYLOAD" >> $GITHUB_OUTPUT
-          echo "ENDOFPAYLOAD" >> $GITHUB_OUTPUT
+          {
+            echo "json<<ENDOFPAYLOAD"
+            echo "$PAYLOAD"
+            echo "ENDOFPAYLOAD"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Send community notification (bot token)
         if: ${{ env.SLACK_BOT_TOKEN != '' }}
@@ -325,8 +331,8 @@ jobs:
               + (if .provided then " | provided: \(.provided)" else "" end)')"
             exit 1
           fi
-          echo "channel=$(echo "$RESPONSE" | jq -r '.channel')" >> $GITHUB_OUTPUT
-          echo "ts=$(echo "$RESPONSE" | jq -r '.ts')" >> $GITHUB_OUTPUT
+          echo "channel=$(echo "$RESPONSE" | jq -r '.channel')" >> "$GITHUB_OUTPUT"
+          echo "ts=$(echo "$RESPONSE" | jq -r '.ts')" >> "$GITHUB_OUTPUT"
 
       - name: Send community notification (webhook fallback)
         if: ${{ env.SLACK_BOT_TOKEN == '' && env.SLACK_WEBHOOK_URL != '' }}
@@ -395,9 +401,11 @@ jobs:
                 }
               }]
             }')
-          echo "json<<ENDOFPAYLOAD" >> $GITHUB_OUTPUT
-          echo "$PAYLOAD" >> $GITHUB_OUTPUT
-          echo "ENDOFPAYLOAD" >> $GITHUB_OUTPUT
+          {
+            echo "json<<ENDOFPAYLOAD"
+            echo "$PAYLOAD"
+            echo "ENDOFPAYLOAD"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Send dependency-bot notification (bot token)
         if: ${{ env.SLACK_BOT_TOKEN != '' }}
@@ -424,8 +432,8 @@ jobs:
               + (if .provided then " | provided: \(.provided)" else "" end)')"
             exit 1
           fi
-          echo "channel=$(echo "$RESPONSE" | jq -r '.channel')" >> $GITHUB_OUTPUT
-          echo "ts=$(echo "$RESPONSE" | jq -r '.ts')" >> $GITHUB_OUTPUT
+          echo "channel=$(echo "$RESPONSE" | jq -r '.channel')" >> "$GITHUB_OUTPUT"
+          echo "ts=$(echo "$RESPONSE" | jq -r '.ts')" >> "$GITHUB_OUTPUT"
 
       - name: Send dependency-bot notification (webhook fallback)
         if: ${{ env.SLACK_BOT_TOKEN == '' && env.SLACK_WEBHOOK_URL != '' }}
@@ -502,8 +510,8 @@ jobs:
             echo "::notice::No Slack message reference found on this PR; nothing to react to"
             exit 0
           fi
-          echo "channel=${REF%% *}" >> $GITHUB_OUTPUT
-          echo "ts=${REF##* }" >> $GITHUB_OUTPUT
+          echo "channel=${REF%% *}" >> "$GITHUB_OUTPUT"
+          echo "ts=${REF##* }" >> "$GITHUB_OUTPUT"
 
       - name: 'Add :white_check_mark: reaction'
         if: ${{ steps.marker.outputs.ts != '' }}

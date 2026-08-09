@@ -137,7 +137,7 @@ jobs:
             }
             fs.writeFileSync('/tmp/uncovered.json', JSON.stringify(uncovered));
           "
-          echo "uncovered=$(cat /tmp/uncovered.json)" >> $GITHUB_OUTPUT
+          echo "uncovered=$(cat /tmp/uncovered.json)" >> "$GITHUB_OUTPUT"
 
       # Vault is imported on every run (not just when a gap is found) so the
       # reconcile step below can also close/comment on cross-repo SDK issues

@@ -58,9 +58,9 @@ jobs:
         id: mention
         run: |
           if [ -n "${{ inputs.mention-group }}" ]; then
-            echo "prefix=<!subteam^${{ inputs.mention-group }}> " >> $GITHUB_OUTPUT
+            echo "prefix=<!subteam^${{ inputs.mention-group }}> " >> "$GITHUB_OUTPUT"
           else
-            echo "prefix=" >> $GITHUB_OUTPUT
+            echo "prefix=" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Send Slack notification
