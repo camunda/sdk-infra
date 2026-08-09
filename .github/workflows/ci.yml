@@ -24,3 +24,32 @@ jobs:
 
       - name: Run tests
         run: npm test
+
+  lint-workflows:
+    name: actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install actionlint
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          set -euo pipefail
+          url="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl --fail --silent --show-error --location "$url" -o /tmp/actionlint.tar.gz
+          echo "${ACTIONLINT_SHA256}  /tmp/actionlint.tar.gz" | sha256sum --check --strict -
+          tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
+          /tmp/actionlint --version
+
+      - name: Check shellcheck is available
+        # actionlint silently skips `run:` block linting when shellcheck is not
+        # on PATH. This repo's reusable workflows are mostly embedded bash, so a
+        # schema-only check would be a near-worthless gate — fail loudly instead
+        # of degrading quietly if the runner image ever drops shellcheck.
+        run: shellcheck --version
+
+      - name: Run actionlint
+        run: /tmp/actionlint -color
+

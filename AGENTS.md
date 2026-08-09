@@ -138,11 +138,24 @@ node -e "require('./configs/commitlint.config.base.cjs')"
 # Run scripts locally (Python 3.10+)
 python3 scripts/sync-readme-snippets.py --help
 python3 scripts/check-example-coverage.py --help
+
+# Lint the workflows (schema + embedded bash)
+actionlint
 ```
 
 Tests live in `tests/` and use `node:test` (zero extra dependencies). They cover the release config helper functions and verify the branch array output under every branch scenario (main, current stable, older stable, missing env var). The semantic-release invariant (≥1 plain release branch) is asserted for all scenarios.
 
 Full integration validation still happens in downstream SDK repos via their CI pipelines.
+
+#### Workflow linting
+
+Most of this repo is embedded bash inside reusable workflows that five SDK repos depend on, so the workflows are gated by [actionlint](https://github.com/rhysd/actionlint) in `ci.yml` (job `lint-workflows`). actionlint checks the workflow schema, the `${{ }}` expression syntax, and — via bundled [shellcheck](https://www.shellcheck.net/) — every `run:` block.
+
+- **shellcheck must be installed** alongside actionlint. Without it, actionlint silently skips the shell scripts and the gate degrades to a schema-only check. CI asserts `shellcheck --version` for exactly this reason.
+- **Composite actions under `actions/` are not linted.** actionlint only understands workflow files, so `run:` blocks in `actions/*/action.yml` go unchecked. Review those by hand.
+- **`.github/actionlint.yaml`** holds the ignore list. It currently suppresses one false positive: actionlint's permission-scope list predates `copilot-requests`.
+- Both the CI job and local runs use the same pinned release (`1.7.12`, SHA256-verified on download), so local results match CI.
+
 
 ### Versioning
 
