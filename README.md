@@ -89,7 +89,11 @@ jobs:
       copilot-requests: write
       issues: write
     uses: camunda/sdk-infra/.github/workflows/sdk-agent-example-coverage.yml@v1
-    secrets: inherit
+    secrets:
+      VAULT_ADDR: ${{ secrets.VAULT_ADDR }}
+      VAULT_JWT_PATH: ${{ secrets.VAULT_JWT_PATH }}
+      VAULT_JWT_ROLE: ${{ secrets.VAULT_JWT_ROLE }}
+      VAULT_JWT_AUDIENCE: ${{ secrets.VAULT_JWT_AUDIENCE }}
     with:
       language: go
       issue-number: ${{ github.event.issue.number }}
