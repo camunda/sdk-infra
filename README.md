@@ -138,13 +138,13 @@ The two distribution channels are versioned separately.
 - **npm package** (`@camunda8/sdk-infra`) — released by semantic-release from `main`. The
   version in `package.json` is a sentinel and is never edited by hand.
 - **Reusable workflows and composite actions** — the moving major tag `v1` only. SDK repos
-  pin to it (`@v1`), and the tag is moved forward once a change lands on `main`. A breaking
-  change to a workflow's or action's interface gets a new major tag (`v2`) and consumers are
-  migrated deliberately; additive changes stay within the current major.
+  pin to it (`@v1`), and the `Release` workflow moves the tag forward on every push to
+  `main`. A breaking change to a workflow's or action's interface gets a new major tag
+  (`v2`) and consumers are migrated deliberately; additive changes stay within the current
+  major.
 
-The two channels share one tag namespace, so `v1` is the only tag ever created by hand.
-`vX.Y.Z` belongs to semantic-release — see AGENTS.md for why a manual one silently costs an
-npm release.
+The two channels share one tag namespace. `vX.Y.Z` belongs to semantic-release and is never
+created by hand — see AGENTS.md for why a manual one silently costs an npm release.
 
 ## Language-specific notes
 

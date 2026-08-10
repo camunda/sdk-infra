@@ -31,3 +31,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_CONFIG_PROVENANCE: true
         run: NODE_AUTH_TOKEN="" npx semantic-release
+
+      # Downstream repos consume the workflows and actions at `@v1`, so a merge is
+      # inert until this moves. Doing it here rather than by hand also keeps it
+      # after semantic-release's `git fetch --tags`, which fails if the tag moves
+      # underneath a run.
+      - name: Move the v1 major tag
+        run: |
+          set -euo pipefail
+          git tag -f v1 "$GITHUB_SHA"
+          git push -f origin refs/tags/v1

@@ -162,13 +162,11 @@ Most of this repo is embedded bash inside reusable workflows that five SDK repos
 This repo uses two versioning schemes:
 
 - **npm package**: Automated via [semantic-release](https://github.com/semantic-release/semantic-release) on the `main` branch. The version in `package.json` is `0.0.0-semantic-release` (sentinel — never edit manually).
-- **GitHub refs**: The moving major tag `v1` only. SDK repos pin to it (`@v1`). Once a change is on `main`, move the tag forward:
+- **GitHub refs**: The moving major tag `v1` only. SDK repos pin to it (`@v1`). The `Release` workflow moves it to every commit that lands on `main`, as a step after semantic-release, so a merge reaches consumers without a manual follow-up.
 
-  ```bash
-  git tag -f v1 origin/main && git push -f origin refs/tags/v1
-  ```
+  Do **not** move it by hand. Both `actions/checkout` and semantic-release fetch tags, and a `v1` that moves mid-run makes `git fetch --tags` fail with `! [rejected] v1 -> v1 (would clobber existing tag)`, turning an otherwise clean release red.
 
-  A breaking change to a workflow's or action's interface gets a new major tag (`v2`), and consumers are migrated deliberately.
+  A breaking change to a workflow's or action's interface gets a new major tag (`v2`), and consumers are migrated deliberately. Since `v1` now advances automatically, land that change behind a new tag rather than relying on withholding the pointer.
 
 > [!IMPORTANT]
 > **Never hand-create a `vX.Y.Z` tag in this repo.** That namespace belongs to semantic-release, which derives the next npm version from the highest semver tag reachable from `main`. A manual `v1.10.0` makes it believe 1.10.0 already shipped, so it skips to 1.11.0 and npm silently loses a version. The two channels share one tag namespace, so the only safe manual tag is the `v1` major pointer.
