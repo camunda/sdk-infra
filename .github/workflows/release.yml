@@ -45,11 +45,11 @@ jobs:
         run: |
           set -euo pipefail
           # Re-running a historical release would otherwise regress consumers to
-          # whatever `main` looked like then.
-          git fetch --quiet --no-tags origin main
-          head="$(git rev-parse origin/main)"
+          # whatever `main` looked like then. Ask the remote rather than trusting
+          # the remote-tracking ref checkout left behind.
+          head="$(git ls-remote origin "$GITHUB_REF" | cut -f1)"
           if [ "$head" != "$GITHUB_SHA" ]; then
-            echo "::notice::main has moved on to ${head}; leaving v1 for that run."
+            echo "::notice::${GITHUB_REF} is now ${head:-gone}; leaving v1 for that run."
             exit 0
           fi
           git tag -f v1 "$GITHUB_SHA"
