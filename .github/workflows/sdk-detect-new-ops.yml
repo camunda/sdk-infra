@@ -253,14 +253,16 @@ jobs:
             // Every target is attempted before the step fails, so one unreachable
             // repo cannot hide the coverage state of the others.
             function recordFailure(what, e) {
-              failures.push(`${what}: ${e.message}`);
-              core.error(`${what}: ${e.message}`);
+              // A non-Error throw must not mask the failure it is reporting.
+              const detail = e?.message ?? String(e);
+              failures.push(`${what}: ${detail}`);
+              core.error(`${what}: ${detail}`);
             }
 
             function failIfAnyFailed() {
               if (!failures.length) return;
               core.setFailed(
-                `Failed to reconcile ${failures.length} tracking issue(s):\n` +
+                `Coverage tracking reconciliation failed (${failures.length} error(s)):\n` +
                 failures.map(f => `- ${f}`).join('\n')
               );
             }
