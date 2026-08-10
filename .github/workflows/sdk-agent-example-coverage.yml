@@ -28,7 +28,11 @@
 #         copilot-requests: write
 #         issues: write
 #       uses: camunda/sdk-infra/.github/workflows/sdk-agent-example-coverage.yml@v1
-#       secrets: inherit
+#       secrets:
+#         VAULT_ADDR: ${{ secrets.VAULT_ADDR }}
+#         VAULT_JWT_PATH: ${{ secrets.VAULT_JWT_PATH }}
+#         VAULT_JWT_ROLE: ${{ secrets.VAULT_JWT_ROLE }}
+#         VAULT_JWT_AUDIENCE: ${{ secrets.VAULT_JWT_AUDIENCE }}
 #       with:
 #         language: js
 #         issue-number: ${{ github.event.issue.number || inputs.issue-number }}
@@ -88,8 +92,11 @@ on:
         default: 45
         type: number
     secrets:
-      # Declared rather than left implicit: an undeclared secret resolves only
-      # under `secrets: inherit`, so a caller that passes secrets explicitly
+      # These four are the only secrets this workflow uses, and callers are
+      # expected to pass them explicitly rather than `secrets: inherit` — the
+      # job hands the repo to an LLM agent, so the blast radius is worth
+      # keeping small. Declaring them is what makes explicit passing work: an
+      # undeclared secret resolves only under `inherit`, so an explicit caller
       # would otherwise reach Vault with an empty address and fail obscurely.
       VAULT_ADDR:
         required: true
