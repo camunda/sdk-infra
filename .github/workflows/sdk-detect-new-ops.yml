@@ -248,6 +248,24 @@ jobs:
 
             const sdkIssueLinks = [];      // for the summary body
             const freshlyCreated = [];     // {repo, number} of SDK issues created this run
+            const failures = [];           // reconciliation errors, surfaced at the end
+
+            // Every target is attempted before the step fails, so one unreachable
+            // repo cannot hide the coverage state of the others.
+            function recordFailure(what, e) {
+              // A non-Error throw must not mask the failure it is reporting.
+              const detail = e?.message ?? String(e);
+              failures.push(`${what}: ${detail}`);
+              core.error(`${what}: ${detail}`);
+            }
+
+            function failIfAnyFailed() {
+              if (!failures.length) return;
+              core.setFailed(
+                `Coverage tracking reconciliation failed (${failures.length} error(s)):\n` +
+                failures.map(f => `- ${f}`).join('\n')
+              );
+            }
 
             // --- Per-SDK reconciliation ---
             if (sdkOctokit) {
@@ -257,7 +275,7 @@ jobs:
                 try {
                   existing = await findOpenIssue(sdkOctokit, owner, sdk.repo, { excludeLabel: 'sdk-coverage' });
                 } catch (e) {
-                  console.log(`${sdk.label}: failed to list issues: ${e.message}`);
+                  recordFailure(`${sdk.label}: failed to list issues`, e);
                   continue;
                 }
 
@@ -269,7 +287,7 @@ jobs:
                         'All listed operations now have example coverage — closing automatically.');
                       console.log(`${sdk.label}: coverage complete — closed ${existing.html_url}`);
                     } catch (e) {
-                      console.log(`${sdk.label}: failed to close issue: ${e.message}`);
+                      recordFailure(`${sdk.label}: failed to close issue`, e);
                     }
                   } else {
                     console.log(`${sdk.label}: fully covered — nothing to do.`);
@@ -324,7 +342,7 @@ jobs:
                     freshlyCreated.push({ repo: sdk.repo, number: created.number });
                   }
                 } catch (e) {
-                  console.log(`${sdk.label}: failed to create/update issue: ${e.message}`);
+                  recordFailure(`${sdk.label}: failed to create/update issue`, e);
                 }
               }
             } else {
@@ -340,7 +358,7 @@ jobs:
               summary = await findOpenIssue(github, context.repo.owner, context.repo.repo, { labels: 'new-operations,sdk-coverage' });
             } catch (e) {
               summary = null;
-              console.log(`Failed to list summary issues: ${e.message}`);
+              recordFailure('Summary issue: failed to list', e);
             }
 
             // No gaps anywhere: close the summary if one is open, then stop.
@@ -351,11 +369,12 @@ jobs:
                     `All operations now have SDK example coverage across ${sdkRepos.map(s => s.label).join(', ')} — closing automatically.`);
                   console.log(`Summary issue: coverage complete — closed ${summary.html_url}`);
                 } catch (e) {
-                  console.log(`Summary issue: failed to close ${summary.html_url}: ${e.message}`);
+                  recordFailure(`Summary issue: failed to close ${summary.html_url}`, e);
                 }
               } else {
                 console.log('No coverage gaps and no open summary issue — nothing to do.');
               }
+              failIfAnyFailed();
               return;
             }
 
@@ -408,7 +427,9 @@ jobs:
                     body: `Cross-SDK summary: ${summary.html_url}`,
                   });
                 } catch (e) {
-                  console.log(`${repo}: failed to back-link: ${e.message}`);
+                  recordFailure(`${repo}: failed to back-link`, e);
                 }
               }
             }
+
+            failIfAnyFailed();
