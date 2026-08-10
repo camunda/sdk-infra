@@ -169,7 +169,7 @@ This repo uses two versioning schemes:
   A breaking change to a workflow's or action's interface gets a new major tag (`v2`), and consumers are migrated deliberately. Since `v1` now advances automatically, land that change behind a new tag rather than relying on withholding the pointer.
 
 > [!IMPORTANT]
-> **Never hand-create a `vX.Y.Z` tag in this repo.** That namespace belongs to semantic-release, which derives the next npm version from the highest semver tag reachable from `main`. A manual `v1.10.0` makes it believe 1.10.0 already shipped, so it skips to 1.11.0 and npm silently loses a version. The two channels share one tag namespace, so the only safe manual tag is the `v1` major pointer.
+> **Never create a tag in this repo by hand.** `vX.Y.Z` belongs to semantic-release, which derives the next npm version from the highest semver tag reachable from `main`. A manual `v1.10.0` makes it believe 1.10.0 already shipped, so it skips to 1.11.0 and npm silently loses a version. `v1` belongs to the `Release` workflow, which advances it after every push to `main` and refuses to move it backward.
 
 #### If a release fails after the tag is pushed
 

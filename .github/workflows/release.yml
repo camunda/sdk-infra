@@ -10,6 +10,11 @@ permissions:
   pull-requests: write
   id-token: write
 
+# An older run finishing after a newer one would push `v1` backward.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -39,5 +44,13 @@ jobs:
       - name: Move the v1 major tag
         run: |
           set -euo pipefail
+          # Re-running a historical release would otherwise regress consumers to
+          # whatever `main` looked like then.
+          git fetch --quiet --no-tags origin main
+          head="$(git rev-parse origin/main)"
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo "::notice::main has moved on to ${head}; leaving v1 for that run."
+            exit 0
+          fi
           git tag -f v1 "$GITHUB_SHA"
           git push -f origin refs/tags/v1
