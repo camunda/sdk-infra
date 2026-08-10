@@ -16,7 +16,9 @@
 # the cap, because a person is deciding each time.
 #
 # Only branches matching the agent branch prefix are eligible, and the agent never
-# reacts to its own output.
+# reacts to its own output. A CI failure is also ignored once the branch has moved
+# past the commit that failed, so the duplicate failure a repo gets from running CI
+# on both `push` and `pull_request` cannot trigger a second, redundant fix.
 #
 # The caller owns the triggers (it names its own CI workflow in `workflow_run`) and
 # grants the job permissions — a reusable workflow cannot elevate beyond the caller.
@@ -164,6 +166,7 @@ jobs:
           # workflow_run
           RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
           echo "eligible=false" >> "$GITHUB_OUTPUT"
@@ -226,6 +229,13 @@ jobs:
                 --json number,headRepositoryOwner \
                 --jq "[.[] | select(.headRepositoryOwner.login == \"${GITHUB_REPOSITORY_OWNER}\")] | .[0].number // empty")"
               [ -n "$pr" ] || { echo "No open PR for ${RUN_HEAD_BRANCH}."; exit 0; }
+              # A repo whose CI runs on both `push` and `pull_request` reports two
+              # failures per commit, so a fix pushed for the first leaves the second
+              # describing a tree that no longer exists. Acting on it re-runs the
+              # agent against work that is already done and burns an attempt.
+              head_sha="$(gh pr view "$pr" --repo "$GH_REPO" --json headRefOid --jq '.headRefOid')"
+              [ "$head_sha" = "$RUN_HEAD_SHA" ] \
+                || { echo "Branch moved on from ${RUN_HEAD_SHA}; stale failure."; exit 0; }
               reason="ci"
               ;;
           esac
