@@ -8,7 +8,7 @@
 //
 // Uses node:test (zero dependencies). Run with: node --test tests/
 
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
@@ -30,7 +30,7 @@ function toPosixPath(p) {
   const winMatch = /^([A-Za-z]):(.*)$/.exec(p);
   if (!winMatch) return p;
   const [, drive, rest] = winMatch;
-  return `/mnt/${drive.toLowerCase()}${rest.replace(/\\/g, "/")}`;
+  return `/${drive.toLowerCase()}${rest.replace(/\\/g, "/")}`;
 }
 
 /**
