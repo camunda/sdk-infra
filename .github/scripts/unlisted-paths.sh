@@ -9,9 +9,11 @@ set -euo pipefail
 
 patterns_file="${1:?usage: unlisted-paths.sh <patterns-file>}"
 
+path=
 while IFS= read -r path || [ -n "$path" ]; do
   [ -n "$path" ] || continue
   matched=false
+  pattern=
   while IFS= read -r pattern || [ -n "$pattern" ]; do
     [ -n "$pattern" ] || continue
     # shellcheck disable=SC2254  # the pattern is an intentional glob
