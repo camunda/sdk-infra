@@ -264,15 +264,22 @@ jobs:
             cat <<'PROMPT_TAIL'
 
           Do the following:
-          1. Cover every operation the repo's coverage check reports as missing, not only
-             the ones the issue names. The issue records what was missing when it was
-             filed; regenerating from a newer spec routinely surfaces more, and the check
-             is what this run is judged by. Run it early to establish the real list, and
-             again after any regeneration. For each missing operation, add a region-tagged
-             example under examples/, copying the structure of an existing example in the
-             matching domain file, and add a matching examples/operation-map.json entry.
-             When an ergonomic helper exists for the operation, point the entry at the
-             helper rather than the raw generated method.
+          1. Cover the union of two lists: the operations the issue names, and the
+             operations the repo's coverage check reports as missing. Neither is
+             authoritative alone. The issue records what was missing when it was filed,
+             and regenerating from a newer spec routinely surfaces more, so run the check
+             early to establish the real list and again after any regeneration.
+             The two disagreeing means the repo's committed spec is older than the one the
+             issue was filed from: re-bundle it using the pipeline in AGENTS.md and re-run
+             the check before drawing any conclusion. A green coverage check is never on
+             its own grounds to finish with no changes while the issue names an operation
+             that is absent from examples/operation-map.json — check that file directly
+             before claiming an operation is already covered.
+             For each operation to cover, add a region-tagged example under examples/,
+             copying the structure of an existing example in the matching domain file, and
+             add a matching examples/operation-map.json entry. When an ergonomic helper
+             exists for the operation, point the entry at the helper rather than the raw
+             generated method.
           2. Write examples that show real usage, not the smallest thing that compiles.
              An example that passes the coverage check but teaches nothing is a
              regression, not coverage. Specifically:
