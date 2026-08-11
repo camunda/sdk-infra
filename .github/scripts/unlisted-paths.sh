@@ -9,10 +9,10 @@ set -euo pipefail
 
 patterns_file="${1:?usage: unlisted-paths.sh <patterns-file>}"
 
-while IFS= read -r path; do
+while IFS= read -r path || [ -n "$path" ]; do
   [ -n "$path" ] || continue
   matched=false
-  while IFS= read -r pattern; do
+  while IFS= read -r pattern || [ -n "$pattern" ]; do
     [ -n "$pattern" ] || continue
     # shellcheck disable=SC2254  # the pattern is an intentional glob
     case "$path" in $pattern) matched=true; break ;; esac

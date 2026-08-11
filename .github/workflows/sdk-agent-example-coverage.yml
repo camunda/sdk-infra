@@ -269,7 +269,7 @@ jobs:
              authoritative alone. The issue records what was missing when it was filed,
              and regenerating from a newer spec routinely surfaces more, so run the check
              early to establish the real list and again after any regeneration.
-             The two disagreeing means the repo's committed spec is older than the one the
+             If the two lists disagree, the repo's committed spec is older than the one the
              issue was filed from: re-bundle it using the pipeline in AGENTS.md and re-run
              the check before drawing any conclusion. A green coverage check is never on
              its own grounds to finish with no changes while the issue names an operation
