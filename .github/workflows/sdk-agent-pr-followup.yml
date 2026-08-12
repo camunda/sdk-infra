@@ -161,6 +161,7 @@ jobs:
           ISSUE_PR_NUMBER: ${{ github.event.issue.number }}
           # pull_request_review
           REVIEW_AUTHOR: ${{ github.event.review.user.login }}
+          REVIEW_AUTHOR_TYPE: ${{ github.event.review.user.type }}
           REVIEW_STATE: ${{ github.event.review.state }}
           REVIEW_PR_NUMBER: ${{ github.event.pull_request.number }}
           # workflow_run
@@ -212,10 +213,12 @@ jobs:
             pull_request_review)
               [ "$REVIEW_STATE" != "approved" ] || { echo "Approving review; nothing to fix."; exit 0; }
               is_self "$REVIEW_AUTHOR" && { echo "Own review; ignoring."; exit 0; }
-              case "$REVIEW_AUTHOR" in
-                *\[bot\]) ;;   # a second-opinion bot review is exactly what we want
-                *) echo "Human review: leave it to /agent fix so the reviewer stays in control."; exit 0 ;;
-              esac
+              # Classify by account type, not by a `[bot]` login suffix: the webhook
+              # reports Copilot's code review as login `Copilot` (the REST API calls
+              # the same account `copilot-pull-request-reviewer[bot]`), so a suffix
+              # test reads the review we most want to act on as a human one.
+              [ "$REVIEW_AUTHOR_TYPE" = "Bot" ] \
+                || { echo "Human review by ${REVIEW_AUTHOR}: leave it to /agent fix so the reviewer stays in control."; exit 0; }
               pr="$REVIEW_PR_NUMBER"
               reason="review"
               ;;
