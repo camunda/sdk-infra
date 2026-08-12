@@ -16,9 +16,9 @@
 # the cap, because a person is deciding each time.
 #
 # Only branches matching the agent branch prefix are eligible, and the agent never
-# reacts to its own output. A CI failure is also ignored once the branch has moved
-# past the commit that failed, so the duplicate failure a repo gets from running CI
-# on both `push` and `pull_request` cannot trigger a second, redundant fix.
+# reacts to its own output. A repo whose CI runs on both `push` and `pull_request`
+# reports one commit as two failures; only the `pull_request` one is acted on. A CI
+# failure is also ignored once the branch has moved past the commit that failed.
 #
 # The caller owns the triggers (it names its own CI workflow in `workflow_run`) and
 # grants the job permissions — a reusable workflow cannot elevate beyond the caller.
@@ -134,6 +134,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+      actions: read          # gh run list, to detect a twin pull_request run
       pull-requests: write   # attempt labels
       issues: write          # PR labels and comments go through the Issues API
     concurrency:
@@ -166,6 +167,8 @@ jobs:
           REVIEW_PR_NUMBER: ${{ github.event.pull_request.number }}
           # workflow_run
           RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RUN_EVENT: ${{ github.event.workflow_run.event }}
+          RUN_WORKFLOW_ID: ${{ github.event.workflow_run.workflow_id }}
           RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
           RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
@@ -228,14 +231,27 @@ jobs:
                 "${AGENT_BRANCH_PREFIX}"*) ;;
                 *) echo "Not an agent branch."; exit 0 ;;
               esac
+              # A repo whose CI runs on both `push` and `pull_request` fails the same
+              # commit twice, and each failure arrives here as its own event — so one
+              # commit costs two agent runs and the whole attempt budget. Defer to the
+              # pull_request run; a push-only CI has no twin to defer to and still
+              # fires. The twin is looked up by existence rather than by conclusion
+              # because it may still be running when this event arrives.
+              if [ "$RUN_EVENT" = "push" ]; then
+                twin="$(gh run list --repo "$GH_REPO" --branch "$RUN_HEAD_BRANCH" \
+                  --workflow "$RUN_WORKFLOW_ID" --event pull_request --limit 50 \
+                  --json headSha \
+                  --jq "[.[] | select(.headSha == \"${RUN_HEAD_SHA}\")] | length")"
+                [ "$twin" -eq 0 ] \
+                  || { echo "The pull_request run covers ${RUN_HEAD_SHA}; ignoring the push run."; exit 0; }
+              fi
               pr="$(gh pr list --repo "$GH_REPO" --head "$RUN_HEAD_BRANCH" --state open \
                 --json number,headRepositoryOwner \
                 --jq "[.[] | select(.headRepositoryOwner.login == \"${GITHUB_REPOSITORY_OWNER}\")] | .[0].number // empty")"
               [ -n "$pr" ] || { echo "No open PR for ${RUN_HEAD_BRANCH}."; exit 0; }
-              # A repo whose CI runs on both `push` and `pull_request` reports two
-              # failures per commit, so a fix pushed for the first leaves the second
-              # describing a tree that no longer exists. Acting on it re-runs the
-              # agent against work that is already done and burns an attempt.
+              # A fix pushed for an earlier failure leaves any later one describing a
+              # tree that no longer exists. Acting on it re-runs the agent against
+              # work that is already done and burns an attempt.
               head_sha="$(gh pr view "$pr" --repo "$GH_REPO" --json headRefOid --jq '.headRefOid')"
               [ "$head_sha" = "$RUN_HEAD_SHA" ] \
                 || { echo "Branch moved on from ${RUN_HEAD_SHA}; stale failure."; exit 0; }
