@@ -264,15 +264,22 @@ jobs:
             cat <<'PROMPT_TAIL'
 
           Do the following:
-          1. Cover every operation the repo's coverage check reports as missing, not only
-             the ones the issue names. The issue records what was missing when it was
-             filed; regenerating from a newer spec routinely surfaces more, and the check
-             is what this run is judged by. Run it early to establish the real list, and
-             again after any regeneration. For each missing operation, add a region-tagged
-             example under examples/, copying the structure of an existing example in the
-             matching domain file, and add a matching examples/operation-map.json entry.
-             When an ergonomic helper exists for the operation, point the entry at the
-             helper rather than the raw generated method.
+          1. Cover the union of two lists: the operations the issue names, and the
+             operations the repo's coverage check reports as missing. Neither is
+             authoritative alone. The issue records what was missing when it was filed,
+             and regenerating from a newer spec routinely surfaces more, so run the check
+             early to establish the real list and again after any regeneration.
+             If the two lists disagree, the repo's committed spec is older than the one the
+             issue was filed from: re-bundle it using the pipeline in AGENTS.md and re-run
+             the check before drawing any conclusion. A green coverage check is never on
+             its own grounds to finish with no changes while the issue names an operation
+             that is absent from examples/operation-map.json — check that file directly
+             before claiming an operation is already covered.
+             For each operation to cover, add a region-tagged example under examples/,
+             copying the structure of an existing example in the matching domain file, and
+             add a matching examples/operation-map.json entry. When an ergonomic helper
+             exists for the operation, point the entry at the helper rather than the raw
+             generated method.
           2. Write examples that show real usage, not the smallest thing that compiles.
              An example that passes the coverage check but teaches nothing is a
              regression, not coverage. Specifically:
@@ -324,15 +331,25 @@ jobs:
       # agent left work uncommitted. Run it after the verify commands and it also
       # catches files those commands regenerate, which previously failed complete
       # work over a touched lockfile or a re-recorded fixture.
+      #
+      # `verify-artifacts` paths are exempt even here: the prompt tells the agent
+      # which commands gate its work, so it runs them itself, and a lockfile it
+      # re-pinned that way is the same regenerated output the post-verify step
+      # exists to commit — not abandoned work.
       - name: Inspect the agent's output
         id: agent
         if: steps.setup.outputs.skip != 'true'
         run: |
           set -euo pipefail
 
-          if [ -n "$(git -c core.quotepath=false status --porcelain --untracked-files=all)" ]; then
+          printf '%s\n' "$VERIFY_ARTIFACTS" > /tmp/verify-artifacts.txt
+          git -c core.quotepath=false status --porcelain --untracked-files=all | cut -c4- \
+            | bash "${SDK_INFRA}/.github/scripts/unlisted-paths.sh" /tmp/verify-artifacts.txt \
+            > /tmp/uncommitted-paths.txt
+
+          if [ -s /tmp/uncommitted-paths.txt ]; then
             echo "::error::The agent left uncommitted changes in the working tree; refusing to open a partial PR."
-            git status --short
+            sed 's/^/  /' /tmp/uncommitted-paths.txt
             exit 1
           fi
 
@@ -365,27 +382,12 @@ jobs:
             exit 0
           fi
           printf '%s\n' "$VERIFY_ARTIFACTS" > /tmp/verify-artifacts.txt
+          bash "${SDK_INFRA}/.github/scripts/unlisted-paths.sh" /tmp/verify-artifacts.txt \
+            < /tmp/dirty-paths.txt > /tmp/unexpected-paths.txt
 
-          allowed=true
-          unexpected=""
-          while IFS= read -r path; do
-            [ -n "$path" ] || continue
-            match=false
-            while IFS= read -r pattern; do
-              [ -n "$pattern" ] || continue
-              # shellcheck disable=SC2254  # the pattern is an intentional glob
-              case "$path" in $pattern) match=true; break ;; esac
-            done < /tmp/verify-artifacts.txt
-            if [ "$match" = false ]; then
-              allowed=false
-              unexpected="${unexpected}  ${path}
-          "
-            fi
-          done < /tmp/dirty-paths.txt
-
-          if [ "$allowed" = false ]; then
+          if [ -s /tmp/unexpected-paths.txt ]; then
             echo "::error::Verification changed files that are not declared in verify-artifacts:"
-            printf '%s' "$unexpected"
+            sed 's/^/  /' /tmp/unexpected-paths.txt
             echo "Either make the verify commands non-mutating, or add these paths to the workflow's verify-artifacts input."
             exit 1
           fi
