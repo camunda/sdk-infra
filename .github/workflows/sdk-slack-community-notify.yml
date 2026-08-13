@@ -146,8 +146,8 @@ jobs:
           roleId: ${{ secrets.vault-role-id }}
           secretId: ${{ secrets.vault-secret-id }}
           secrets: |
-            secret/data/products/onboarding-and-migration/github.com/apps/camunda/camunda-sdk-automation GITHUB_APP_ID;
-            secret/data/products/onboarding-and-migration/github.com/apps/camunda/camunda-sdk-automation GITHUB_APP_PRIVATE_KEY;
+            secret/data/products/agentic-experience/github.com/apps/camunda/camunda-sdk-automation GITHUB_APP_ID;
+            secret/data/products/agentic-experience/github.com/apps/camunda/camunda-sdk-automation GITHUB_APP_PRIVATE_KEY;
           exportEnv: true
 
       - name: Generate GitHub App token
