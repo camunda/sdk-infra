@@ -84,7 +84,7 @@ The currently promoted stable major is set via the `CAMUNDA_SDK_CURRENT_STABLE_M
 | `sdk-detect-new-ops.yml` | Detect operations missing SDK example coverage; opens per-SDK issues and a cross-linked summary (requires `SDK_ISSUE_TOKEN` secret for cross-repo issues) |
 | `scheduled-detect-new-ops.yml` | Scheduled daily check for SDK coverage gaps with cross-repo issue creation. A thin caller: it bundles the spec, then delegates to `sdk-detect-new-ops.yml` |
 | `sdk-agent-example-coverage.yml` | Resolve a `new-operations` coverage issue by running the Copilot CLI and opening a PR. Callers supply `language`, `issue-number` and `verify-commands` |
-| `sdk-agent-pr-followup.yml` | React to feedback on an agent-authored PR (`/agent fix` comment, failing CI, bot review) by running the Copilot CLI on the same branch |
+| `sdk-agent-pr-followup.yml` | React to feedback on an agent-authored PR (`/agent fix` comment, failing CI, bot review) by running the Copilot CLI on the same branch. The bot-review path is a `schedule` sweep, not a `pull_request_review` trigger |
 | `sdk-slack-notify.yml` | Send a Slack notification when a release/publish workflow fails (requires `SLACK_SDK_ALERTS` repo secret) |
 | `sdk-slack-community-notify.yml` | Notify Slack about community issues/PRs and dependency-bot PRs. With `slack-bot-token` + `slack-channel-id` it posts via `chat.postMessage`, records the message reference on the PR, and adds a `:white_check_mark:` reaction when that PR is merged; falls back to the incoming webhook (no reaction) when no bot token is set. Callers must grant `issues: write` and `pull-requests: write` |
 
@@ -105,7 +105,7 @@ implementation behind each SDK repo's `.github/workflows/agent-*.yml`. Those cal
 are deliberately thin — they own only the triggers, the job permissions, the language,
 and the `verify-commands` that define "verified" for that repo.
 
-Three design points are load-bearing and should not be undone casually:
+Four design points are load-bearing and should not be undone casually:
 
 - **Ordering.** The run is `agent → inspect → verify → reconcile → push`. Inspecting the
   working tree *before* verification is the only moment at which a dirty tree
@@ -119,6 +119,13 @@ Three design points are load-bearing and should not be undone casually:
   check `camunda/sdk-infra` out at `inputs.sdk-infra-ref` into `.sdk-infra/` and use it
   locally. Set `sdk-infra-ref` in a caller to test a branch end to end. The checkout is
   added to `.git/info/exclude` so it does not register as an untracked file.
+- **The bot-review path is a `schedule` sweep, not `pull_request_review`.** GitHub parks
+  every run whose triggering actor is `Copilot` at `action_required` until a human
+  approves it, so the event-driven version was created and never executed — silently,
+  with nothing on the PR to say so (camunda/sdk-infra#42). The sweep asks instead of
+  being told: it looks for an agent PR whose current head commit carries a non-approving
+  bot review. Head moving is what marks a review addressed, which is the same staleness
+  rule the CI path uses. Do not "simplify" this back to the event trigger.
 
 ### Build & test
 

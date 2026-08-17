@@ -7,8 +7,17 @@
 # Three ways in:
 #   1. `/agent fix [instructions]` in a PR comment — human-directed, uncapped.
 #   2. A CI run failing on an agent branch — automatic.
-#   3. A review submitted by a *different* bot reviewer (e.g. the Copilot PR
+#   3. An unaddressed review from a *different* bot reviewer (e.g. the Copilot PR
 #      reviewer) — automatic. A second opinion catches things the author missed.
+#
+# Path 3 is a `schedule` sweep rather than the obvious `pull_request_review` trigger.
+# GitHub attributes a Copilot review to the `Copilot` actor and parks every run that
+# actor triggers at `action_required` until a human approves it, so the event path
+# never fires unattended — see camunda/sdk-infra#42. The sweep polls instead: it
+# looks for an agent PR whose *current head commit* carries a live bot review and
+# acts on the lowest-numbered one, so a PR that has been waiting is not starved by
+# newer ones. Pushing a fix moves head, and that is what makes a review count as
+# addressed, so the sweep does not re-run on work already done.
 #
 # The two automatic paths share a hard attempt cap (see max-auto-attempts) tracked
 # with `agent-attempt-N` labels, so a fix → CI → fix → review → fix chain always
@@ -27,8 +36,8 @@
 #   on:
 #     issue_comment:
 #       types: [created]
-#     pull_request_review:
-#       types: [submitted]
+#     schedule:
+#       - cron: '17 * * * *'
 #     workflow_run:
 #       workflows: ["PR & Branch CI"]
 #       types: [completed]
@@ -138,13 +147,14 @@ jobs:
       pull-requests: write   # attempt labels
       issues: write          # PR labels and comments go through the Issues API
     concurrency:
-      group: agent-followup-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number || github.event.workflow_run.head_branch }}
+      group: agent-followup-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number || github.event.workflow_run.head_branch || 'sweep' }}
       cancel-in-progress: false
     outputs:
       eligible: ${{ steps.decide.outputs.eligible }}
       pr: ${{ steps.decide.outputs.pr }}
       branch: ${{ steps.decide.outputs.branch }}
       reason: ${{ steps.decide.outputs.reason }}
+      review-id: ${{ steps.decide.outputs.review-id }}
     steps:
       - name: Decide whether to run the agent
         id: decide
@@ -160,11 +170,6 @@ jobs:
           COMMENT_ASSOC: ${{ github.event.comment.author_association }}
           IS_PR: ${{ github.event.issue.pull_request != null }}
           ISSUE_PR_NUMBER: ${{ github.event.issue.number }}
-          # pull_request_review
-          REVIEW_AUTHOR: ${{ github.event.review.user.login }}
-          REVIEW_AUTHOR_TYPE: ${{ github.event.review.user.type }}
-          REVIEW_STATE: ${{ github.event.review.state }}
-          REVIEW_PR_NUMBER: ${{ github.event.pull_request.number }}
           # workflow_run
           RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           RUN_EVENT: ${{ github.event.workflow_run.event }}
@@ -183,7 +188,7 @@ jobs:
             esac
           }
 
-          pr=""; reason=""; capped="true"
+          pr=""; reason=""; review_id=""; capped="true"
 
           case "$EVENT" in
             issue_comment)
@@ -213,17 +218,64 @@ jobs:
               reason="comment"
               capped="false"   # a human asked for this explicitly
               ;;
-            pull_request_review)
-              [ "$REVIEW_STATE" != "approved" ] || { echo "Approving review; nothing to fix."; exit 0; }
-              is_self "$REVIEW_AUTHOR" && { echo "Own review; ignoring."; exit 0; }
-              # Classify by account type, not by a `[bot]` login suffix: the webhook
-              # reports Copilot's code review as login `Copilot` (the REST API calls
-              # the same account `copilot-pull-request-reviewer[bot]`), so a suffix
-              # test reads the review we most want to act on as a human one.
-              [ "$REVIEW_AUTHOR_TYPE" = "Bot" ] \
-                || { echo "Human review by ${REVIEW_AUTHOR}: leave it to /agent fix so the reviewer stays in control."; exit 0; }
-              pr="$REVIEW_PR_NUMBER"
-              reason="review"
+            schedule)
+              # Poll for bot reviews instead of reacting to `pull_request_review`:
+              # GitHub parks any run the `Copilot` actor triggers at `action_required`
+              # until a human approves it, so the event path never fires unattended.
+              candidates="$(gh pr list --repo "$GH_REPO" --state open --limit 100 \
+                --json number,headRefName,headRefOid,headRepositoryOwner,labels \
+                --jq "[ .[]
+                        | select(.headRepositoryOwner.login == \"${GITHUB_REPOSITORY_OWNER}\")
+                        | select(.headRefName | startswith(\"${AGENT_BRANCH_PREFIX}\"))
+                      ] | sort_by(.number)")"
+
+              while read -r cand; do
+                n="$(printf '%s' "$cand" | jq -r '.number')"
+                cand_head="$(printf '%s' "$cand" | jq -r '.headRefOid')"
+
+                # Pre-filter on the budget rather than letting the shared block below
+                # reject it: that block comments when it caps, and a sweep that runs
+                # hourly would repost that comment on every tick forever.
+                cand_used="$(printf '%s' "$cand" \
+                  | jq '[.labels[].name
+                           | select(test("^agent-attempt-[0-9]+$"))
+                           | sub("^agent-attempt-"; "")
+                           | tonumber] | max // 0')"
+                if [ "$cand_used" -ge "$MAX_AUTO_ATTEMPTS" ]; then
+                  echo "::warning::PR #${n} has used all ${MAX_AUTO_ATTEMPTS} automatic attempts; skipping."
+                  continue
+                fi
+
+                # A review is unaddressed exactly when it sits on the current head
+                # commit. Once the agent pushes, head moves and the review describes a
+                # tree that no longer exists — the same staleness rule the CI path uses.
+                # Classify the author by account type, not by a `[bot]` login suffix:
+                # the webhook reports Copilot's code review as login `Copilot`, and the
+                # REST API as `copilot-pull-request-reviewer[bot]`.
+                # Match the two live states rather than excluding `APPROVED`: a
+                # `DISMISSED` review has been retracted and is not feedback to act on.
+                found="$(gh api "repos/${GH_REPO}/pulls/${n}/reviews" --paginate \
+                  --jq "[ .[]
+                          | select(.user.type == \"Bot\")
+                          | select(.state == \"COMMENTED\" or .state == \"CHANGES_REQUESTED\")
+                          | select(.commit_id == \"${cand_head}\")
+                        ]
+                        | last
+                        | if . == null then empty else \"\(.id) \(.user.login)\" end")"
+                [ -n "$found" ] || continue
+
+                if is_self "${found#* }"; then
+                  echo "PR #${n}: newest bot review is our own; ignoring."
+                  continue
+                fi
+
+                pr="$n"
+                reason="review"
+                review_id="${found%% *}"
+                break
+              done < <(printf '%s' "$candidates" | jq -c '.[]')
+
+              [ -n "$pr" ] || { echo "No agent PR carries an unaddressed bot review."; exit 0; }
               ;;
             workflow_run)
               [ "$RUN_CONCLUSION" = "failure" ] || { echo "CI did not fail."; exit 0; }
@@ -257,6 +309,11 @@ jobs:
                 || { echo "Branch moved on from ${RUN_HEAD_SHA}; stale failure."; exit 0; }
               reason="ci"
               ;;
+            *)
+              # A caller that still declares a trigger this workflow no longer handles
+              # (`pull_request_review`, say) would otherwise fall through with an empty
+              # PR number and fail on the `gh pr view` below.
+              echo "Unhandled event: ${EVENT}."; exit 0 ;;
           esac
 
           branch="$(gh pr view "$pr" --repo "$GH_REPO" --json headRefName --jq '.headRefName')"
@@ -291,6 +348,7 @@ jobs:
             echo "pr=${pr}"
             echo "branch=${branch}"
             echo "reason=${reason}"
+            echo "review-id=${review_id}"
           } >> "$GITHUB_OUTPUT"
 
   fix:
@@ -388,8 +446,7 @@ jobs:
           PR: ${{ needs.triage.outputs.pr }}
           REASON: ${{ needs.triage.outputs.reason }}
           COMMENT_BODY: ${{ github.event.comment.body }}
-          REVIEW_BODY: ${{ github.event.review.body }}
-          REVIEW_ID: ${{ github.event.review.id }}
+          REVIEW_ID: ${{ needs.triage.outputs.review-id }}
           RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
           set -euo pipefail
@@ -400,10 +457,13 @@ jobs:
               printf '%s\n' "$COMMENT_BODY" > /tmp/feedback.md
               ;;
             review)
+              # Read the body back through the API rather than off the event payload:
+              # the sweep that selects the review has no review payload to read from.
               {
-                printf '%s\n\n' "$REVIEW_BODY"
+                gh api "repos/${GH_REPO}/pulls/${PR}/reviews/${REVIEW_ID}" --jq '.body'
+                echo
                 echo "Inline comments:"
-                gh api "repos/${GH_REPO}/pulls/${PR}/comments" \
+                gh api "repos/${GH_REPO}/pulls/${PR}/comments" --paginate \
                   --jq ".[] | select(.pull_request_review_id == ${REVIEW_ID}) | \"- \(.path):\(.line // .original_line) — \(.body)\"" \
                   || true
               } > /tmp/feedback.md
