@@ -102,7 +102,9 @@ jobs:
 ```
 
 A companion `sdk-agent-pr-followup.yml` reacts to feedback on the resulting pull request
-— a `/agent fix` comment, a failing CI run, or a review from another bot.
+— a `/agent fix` comment, a failing CI run, or a review from another bot. The bot-review
+path runs on an hourly `schedule` rather than on `pull_request_review`, because GitHub
+parks any run the `Copilot` actor triggers behind manual approval.
 
 Declare any tracked file the verify commands legitimately regenerate (a lockfile, a
 recorded fixture) in `verify-artifacts`; anything they touch outside that allow-list
