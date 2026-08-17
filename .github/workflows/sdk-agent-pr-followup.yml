@@ -14,9 +14,10 @@
 # GitHub attributes a Copilot review to the `Copilot` actor and parks every run that
 # actor triggers at `action_required` until a human approves it, so the event path
 # never fires unattended — see camunda/sdk-infra#42. The sweep polls instead: it
-# looks for an agent PR whose *current head commit* carries a non-approving bot
-# review and acts on the newest one. Pushing a fix moves head, and that is what makes
-# a review count as addressed, so the sweep does not re-run on work already done.
+# looks for an agent PR whose *current head commit* carries a live bot review and
+# acts on the lowest-numbered one, so a PR that has been waiting is not starved by
+# newer ones. Pushing a fix moves head, and that is what makes a review count as
+# addressed, so the sweep does not re-run on work already done.
 #
 # The two automatic paths share a hard attempt cap (see max-auto-attempts) tracked
 # with `agent-attempt-N` labels, so a fix → CI → fix → review → fix chain always
@@ -251,10 +252,12 @@ jobs:
                 # Classify the author by account type, not by a `[bot]` login suffix:
                 # the webhook reports Copilot's code review as login `Copilot`, and the
                 # REST API as `copilot-pull-request-reviewer[bot]`.
+                # Match the two live states rather than excluding `APPROVED`: a
+                # `DISMISSED` review has been retracted and is not feedback to act on.
                 found="$(gh api "repos/${GH_REPO}/pulls/${n}/reviews" --paginate \
                   --jq "[ .[]
                           | select(.user.type == \"Bot\")
-                          | select(.state != \"APPROVED\")
+                          | select(.state == \"COMMENTED\" or .state == \"CHANGES_REQUESTED\")
                           | select(.commit_id == \"${cand_head}\")
                         ]
                         | last
