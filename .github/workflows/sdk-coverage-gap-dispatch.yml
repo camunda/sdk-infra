@@ -1,0 +1,307 @@
+# Reusable workflow: react to a CI failure on the example-coverage step by
+# tracking the gap centrally instead of patching the branch that tripped over it.
+#
+# Why this exists
+# ---------------
+# In js, csharp and python the coverage check bundles the upstream spec fresh on
+# every CI run. So a new operation landing in camunda/camunda turns *every* open
+# PR in those repos red at once — including lockfile-only Renovate PRs that never
+# touched an example. The failure is a property of `main`, not of the branch.
+#
+# Fixing it on the failing branch would therefore be wrong in three ways: it would
+# push unrelated commits onto someone else's PR, it would mark Renovate branches
+# user-modified (freezing their updates and blocking automerge), and it would
+# repeat the same fix across every red branch instead of once.
+#
+# So this workflow touches nothing on the PR. It asks the central detector to run,
+# which files the tracking issue against `main`; the existing agent flow turns that
+# issue into a single coverage PR. Merging it clears every blocked branch at once.
+#
+# The detector is otherwise a weekday 07:00 UTC cron, so an upstream change on a
+# Friday evening would otherwise sit undetected — and block every PR — until Monday.
+#
+# Usage:
+#   on:
+#     workflow_run:
+#       workflows: ["PR & Branch CI"]
+#       types: [completed]
+#   jobs:
+#     coverage-gap:
+#       permissions:
+#         contents: read
+#         actions: read          # read the failing run's step conclusions
+#         id-token: write        # Vault JWT auth
+#         pull-requests: read    # resolve the PR behind the run
+#         issues: write          # the explanatory PR comment
+#       uses: camunda/sdk-infra/.github/workflows/sdk-coverage-gap-dispatch.yml@v1
+#       secrets:
+#         VAULT_ADDR: ${{ secrets.VAULT_ADDR }}
+#         VAULT_JWT_PATH: ${{ secrets.VAULT_JWT_PATH }}
+#         VAULT_JWT_ROLE: ${{ secrets.VAULT_JWT_ROLE }}
+#         VAULT_JWT_AUDIENCE: ${{ secrets.VAULT_JWT_AUDIENCE }}
+
+name: SDK — coverage gap dispatch
+
+on:
+  workflow_call:
+    inputs:
+      coverage-step-names:
+        description: >-
+          Newline-separated CI step names that mean "example coverage failed".
+          The default covers both spellings currently in use across the SDKs;
+          a run is only acted on if one of these exact step names failed.
+        required: false
+        default: |
+          Check SDK Example Coverage
+          Check example coverage
+        type: string
+      detector-repo:
+        description: >-
+          Name of the repository hosting the detector workflow, without the owner.
+          The owner is always this repository's owner, which is also what lets the
+          App token be scoped to just this one repo.
+        required: false
+        default: 'sdk-infra'
+        type: string
+      detector-event-type:
+        description: >-
+          repository_dispatch event type the detector listens for. This is a
+          repository_dispatch rather than a workflow_dispatch because the App
+          this runs as has no `actions` permission at all: dispatching a workflow
+          needs `actions: write`, while a repository dispatch needs `contents:
+          write`, which the App already holds.
+
+          It is routed to the scheduled wrapper, not to the reusable
+          sdk-detect-new-ops.yml: the wrapper bundles the spec first, and the
+          reusable one opens its cross-SDK summary issue in the *calling* repo,
+          which would scatter five summaries across the five SDKs.
+        required: false
+        default: 'coverage-gap'
+        type: string
+      tracking-label:
+        description: 'Label identifying an already-open coverage gap issue in this repo.'
+        required: false
+        default: 'new-operations'
+        type: string
+      runs-on:
+        required: false
+        default: 'ubuntu-24.04'
+        type: string
+    secrets:
+      VAULT_ADDR:
+        required: true
+      VAULT_JWT_PATH:
+        required: true
+      VAULT_JWT_ROLE:
+        required: true
+      VAULT_JWT_AUDIENCE:
+        required: true
+
+jobs:
+  dispatch:
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      pull-requests: read
+      issues: write
+    # Serialise the twin runs a repo produces when CI fires on both `push` and
+    # `pull_request` for one commit, so the second sees the first's dispatch
+    # rather than racing it.
+    concurrency:
+      group: coverage-gap-dispatch-${{ github.repository }}-${{ github.event.workflow_run.head_sha }}
+      cancel-in-progress: false
+    steps:
+      - name: Check whether the coverage step failed
+        id: detect
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          STEP_NAMES: ${{ inputs.coverage-step-names }}
+        run: |
+          set -euo pipefail
+
+          if [ "$RUN_CONCLUSION" != "failure" ]; then
+            echo "Run concluded '$RUN_CONCLUSION', not a failure. Nothing to do."
+            echo "coverage_failed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Step-level conclusions, so the caller does not have to split its CI
+          # into a separate coverage job for this to be targetable.
+          gh api --paginate "/repos/${GH_REPO}/actions/runs/${RUN_ID}/jobs" \
+            --jq '.jobs[] | select(.conclusion == "failure") | .steps[]
+                  | select(.conclusion == "failure") | .name' \
+            > failed-steps.txt
+
+          echo "Failed steps in run ${RUN_ID}:"
+          sed 's/^/  /' failed-steps.txt
+
+          matched=''
+          while IFS= read -r candidate; do
+            if [ -n "$candidate" ] && grep -Fxq "$candidate" failed-steps.txt; then
+              matched="$candidate"
+              break
+            fi
+          done <<< "$STEP_NAMES"
+
+          if [ -z "$matched" ]; then
+            echo "No coverage step among the failures. This is an ordinary CI failure."
+            echo "coverage_failed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Coverage step failed: ${matched}"
+          echo "coverage_failed=true" >> "$GITHUB_OUTPUT"
+
+      # A gap already has an issue, or the detector is already running. Either way
+      # dispatching again would only add noise: the detector reconciles issues from
+      # `main` and is idempotent, but one upstream operation reddens every open PR
+      # across five repos, so without this gate a single upstream commit could fan
+      # out into dozens of dispatches.
+      - name: Check whether the gap is already tracked
+        id: tracked
+        if: steps.detect.outputs.coverage_failed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          LABEL: ${{ inputs.tracking-label }}
+        run: |
+          set -euo pipefail
+
+          issue=$(gh issue list --repo "$GH_REPO" --label "$LABEL" --state open \
+                    --limit 1 --json number,url --jq '.[0] // empty')
+
+          if [ -n "$issue" ]; then
+            number=$(echo "$issue" | jq -r '.number')
+            url=$(echo "$issue" | jq -r '.url')
+            echo "Gap already tracked by issue #${number}."
+            echo "already_tracked=true" >> "$GITHUB_OUTPUT"
+            echo "issue_url=${url}" >> "$GITHUB_OUTPUT"
+          else
+            echo "No open '${LABEL}' issue in ${GH_REPO}."
+            echo "already_tracked=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Import secrets
+        id: secrets
+        if: steps.detect.outputs.coverage_failed == 'true' && steps.tracked.outputs.already_tracked == 'false'
+        uses: hashicorp/vault-action@892a26828f195e65540a40b4768ae4571f51ebfc # v4.0.0
+        with:
+          url: ${{ secrets.VAULT_ADDR }}
+          method: jwt
+          path: ${{ secrets.VAULT_JWT_PATH }}
+          role: ${{ secrets.VAULT_JWT_ROLE }}
+          jwtGithubAudience: ${{ secrets.VAULT_JWT_AUDIENCE }}
+          exportEnv: false
+          secrets: |
+            secret/data/products/onboarding-and-migration/github.com/apps/camunda/camunda-sdk-automation GITHUB_APP_ID | APP_ID ;
+            secret/data/products/onboarding-and-migration/github.com/apps/camunda/camunda-sdk-automation GITHUB_APP_PRIVATE_KEY | APP_PRIVATE_KEY ;
+
+      - name: Generate GitHub App token
+        id: app-token
+        if: steps.detect.outputs.coverage_failed == 'true' && steps.tracked.outputs.already_tracked == 'false'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ steps.secrets.outputs.APP_ID }}
+          private-key: ${{ steps.secrets.outputs.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          # Scoped to the detector repo only — this token never writes to an SDK.
+          repositories: ${{ inputs.detector-repo }}
+          # The only permission a repository dispatch needs. Requesting it
+          # explicitly also fails the step loudly if the installation ever loses
+          # it, rather than leaving a 403 to surface from the call below.
+          permission-contents: write
+
+      - name: Dispatch the detector
+        id: dispatch
+        if: steps.detect.outputs.coverage_failed == 'true' && steps.tracked.outputs.already_tracked == 'false'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          DETECTOR_REPO: ${{ github.repository_owner }}/${{ inputs.detector-repo }}
+          EVENT_TYPE: ${{ inputs.detector-event-type }}
+          SOURCE_REPO: ${{ github.repository }}
+          SOURCE_RUN: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+
+          # A burst of failing PRs can dispatch this several times over. That is
+          # tolerable: the detector reconciles against the open tracking issue,
+          # updating or closing it rather than opening a second one. Checking for
+          # an in-flight detector run first would need `actions: read` on the
+          # detector repo, which this App does not have.
+          jq -n --arg t "$EVENT_TYPE" --arg repo "$SOURCE_REPO" --arg run "$SOURCE_RUN" \
+            '{event_type: $t, client_payload: {source_repo: $repo, source_run: $run}}' \
+            | gh api "/repos/${DETECTOR_REPO}/dispatches" --method POST --input -
+
+          echo "Dispatched '${EVENT_TYPE}' to ${DETECTOR_REPO}."
+          echo "dispatched=true" >> "$GITHUB_OUTPUT"
+          echo "runs_url=https://github.com/${DETECTOR_REPO}/actions" >> "$GITHUB_OUTPUT"
+
+      # Explain the red check once, so the PR author does not go looking for a
+      # mistake in their own diff. Fork PRs resolve to no PR here and are simply
+      # skipped; the dispatch above has already done the useful work.
+      - name: Explain the failure on the pull request
+        if: steps.detect.outputs.coverage_failed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          ISSUE_URL: ${{ steps.tracked.outputs.issue_url }}
+          RUNS_URL: ${{ steps.dispatch.outputs.runs_url }}
+        run: |
+          set -euo pipefail
+
+          marker='<!-- sdk-coverage-gap-dispatch -->'
+
+          pr=$(gh api "/repos/${GH_REPO}/commits/${HEAD_SHA}/pulls" \
+               | jq -r --arg owner "$REPO_OWNER" \
+                   '[.[] | select(.state == "open")
+                         | select(.head.repo.owner.login == $owner)]
+                    | .[0].number // empty')
+
+          if [ -z "$pr" ]; then
+            echo "No open same-owner PR for ${HEAD_SHA}. Nothing to comment on."
+            exit 0
+          fi
+
+          # Collected to a file rather than piped into grep: under `pipefail` an
+          # early-exiting `grep -q` SIGPIPEs the producer, and the resulting
+          # non-zero status would read as "no comment found" and post a duplicate.
+          gh api --paginate "/repos/${GH_REPO}/issues/${pr}/comments" \
+            --jq '.[].body' > comments.txt
+
+          if grep -Fq "$marker" comments.txt; then
+            echo "PR #${pr} already carries the explanation."
+            exit 0
+          fi
+
+          if [ -n "$ISSUE_URL" ]; then
+            tracking="It is already tracked in ${ISSUE_URL}."
+          elif [ -n "$RUNS_URL" ]; then
+            tracking="Detection has been triggered: ${RUNS_URL}"
+          else
+            tracking="Detection is already running; a tracking issue will follow shortly."
+          fi
+
+          {
+            echo "$marker"
+            echo "**The example coverage check is failing for a reason unrelated to this pull request.**"
+            echo
+            echo "This repository checks example coverage against the upstream OpenAPI spec as it"
+            echo "is *right now*, not against a committed snapshot. New operations landing upstream"
+            echo "therefore turn every open pull request red at the same time, whatever it changed."
+            echo
+            echo "${tracking}"
+            echo
+            echo "No action is needed here. Once the coverage pull request against \`main\` merges,"
+            echo "re-run this check — or let the branch pick up \`main\` — and it will pass."
+          } > comment.md
+
+          gh pr comment "$pr" --repo "$GH_REPO" --body-file comment.md
+          echo "Explained on PR #${pr}."

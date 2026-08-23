@@ -110,6 +110,12 @@ Declare any tracked file the verify commands legitimately regenerate (a lockfile
 recorded fixture) in `verify-artifacts`; anything they touch outside that allow-list
 fails the run rather than being swept into the commit.
 
+In the SDKs that bundle the spec fresh on every CI run — js, python and csharp — a new
+upstream operation fails the coverage check on every open pull request at once, none of
+which caused it. `sdk-coverage-gap-dispatch.yml` reacts to that by dispatching the
+detector above, so the gap is fixed once against `main`, and leaves a single comment
+explaining the red check rather than pushing a commit onto someone else's branch.
+
 ### 7. Shared configs
 
 ```js
