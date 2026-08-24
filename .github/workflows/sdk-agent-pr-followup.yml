@@ -486,6 +486,39 @@ jobs:
           esac
           echo "Collected $(wc -l < /tmp/feedback.md) lines of feedback."
 
+      # Snapshotted before the agent runs, so only threads it could actually have
+      # read are resolved afterwards — a review that lands mid-run stays open and
+      # gets its own sweep. Human-authored threads are deliberately excluded: a
+      # person's comment is resolved by a person, which is also what keeps the
+      # auto-merge gate from being something the agent can wave through on its own.
+      - name: Note which review threads the agent is answering
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ needs.triage.outputs.pr }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2016  # $owner and friends are GraphQL variables
+          gh api graphql -f owner="${GH_REPO%%/*}" -f name="${GH_REPO##*/}" -F number="$PR" -f query='
+            query($owner:String!, $name:String!, $number:Int!) {
+              repository(owner:$owner, name:$name) {
+                pullRequest(number:$number) {
+                  reviewThreads(last: 100) {
+                    nodes {
+                      id
+                      isResolved
+                      comments(first: 1) { nodes { author { login, __typename } } }
+                    }
+                  }
+                }
+              }
+            }' \
+            --jq '.data.repository.pullRequest.reviewThreads.nodes[]
+                    | select(.isResolved == false)
+                    | select(.comments.nodes[0].author.__typename == "Bot")
+                    | .id' > /tmp/bot-threads.txt || : > /tmp/bot-threads.txt
+          echo "Tracking $(wc -l < /tmp/bot-threads.txt) unresolved bot review thread(s)."
+
       - name: Run Copilot CLI
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -645,6 +678,39 @@ jobs:
             "https://x-access-token:${APP_TOKEN}@github.com/${GH_REPO}.git" \
             "HEAD:refs/heads/${BRANCH}"
           echo "pushed=true" >> "$GITHUB_OUTPUT"
+
+      # Only after a successful push, because the push is the evidence: an agent run
+      # that changed nothing has answered nothing. Resolving makes "addressed" a
+      # state a reader can see on the PR rather than one inferred from head having
+      # moved, and it is the signal sdk-agent-auto-merge gates on.
+      - name: Resolve the review threads the agent answered
+        if: steps.push.outputs.pushed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          [ -s /tmp/bot-threads.txt ] || { echo "No bot threads to resolve."; exit 0; }
+
+          resolved=0
+          while IFS= read -r thread; do
+            [ -n "$thread" ] || continue
+            # Best-effort: a thread deleted or resolved by a human mid-run is not a
+            # reason to fail a run whose fix is already pushed.
+            # shellcheck disable=SC2016  # $threadId is a GraphQL variable
+            if gh api graphql -f threadId="$thread" -f query='
+                 mutation($threadId:ID!) {
+                   resolveReviewThread(input:{threadId:$threadId}) {
+                     thread { isResolved }
+                   }
+                 }' >/dev/null; then
+              resolved=$((resolved + 1))
+            else
+              echo "::warning::Could not resolve review thread ${thread}."
+            fi
+          done < /tmp/bot-threads.txt
+
+          echo "Resolved ${resolved} review thread(s)."
 
       - name: Report back on the pull request
         if: always()
