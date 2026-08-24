@@ -13,7 +13,9 @@
 # This workflow used to carry a second copy of it, which meant adding an SDK or
 # fixing a comparison bug had to be done twice and stayed correct only by luck.
 #
-# Runs daily at 07:00 UTC (weekdays). Can also be triggered manually.
+# Runs daily at 07:00 UTC (weekdays). Can also be triggered manually, or by an
+# SDK whose example-coverage check just failed (see sdk-coverage-gap-dispatch.yml)
+# so that an upstream change landing on a Friday is tracked before Monday.
 
 name: Daily New Operations Check
 
@@ -21,6 +23,8 @@ on:
   schedule:
     - cron: '0 7 * * 1-5' # 07:00 UTC, Monday–Friday
   workflow_dispatch: {} # Allow manual trigger
+  repository_dispatch:
+    types: [coverage-gap]
 
 permissions: {}
 

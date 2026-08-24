@@ -85,6 +85,7 @@ The currently promoted stable major is set via the `CAMUNDA_SDK_CURRENT_STABLE_M
 | `scheduled-detect-new-ops.yml` | Scheduled daily check for SDK coverage gaps with cross-repo issue creation. A thin caller: it bundles the spec, then delegates to `sdk-detect-new-ops.yml` |
 | `sdk-agent-example-coverage.yml` | Resolve a `new-operations` coverage issue by running the Copilot CLI and opening a PR. Callers supply `language`, `issue-number` and `verify-commands` |
 | `sdk-agent-pr-followup.yml` | React to feedback on an agent-authored PR (`/agent fix` comment, failing CI, bot review) by running the Copilot CLI on the same branch. The bot-review path is a `schedule` sweep, not a `pull_request_review` trigger |
+| `sdk-coverage-gap-dispatch.yml` | On a CI failure whose failing *step* is the example-coverage check, send a `coverage-gap` `repository_dispatch` to `scheduled-detect-new-ops.yml` instead of touching the PR, and comment once to explain the unrelated red check. For the repos that bundle the spec live (js, python, csharp), where upstream movement reddens every open PR at once |
 | `sdk-slack-notify.yml` | Send a Slack notification when a release/publish workflow fails (requires `SLACK_SDK_ALERTS` repo secret) |
 | `sdk-slack-community-notify.yml` | Notify Slack about community issues/PRs and dependency-bot PRs. With `slack-bot-token` + `slack-channel-id` it posts via `chat.postMessage`, records the message reference on the PR, and adds a `:white_check_mark:` reaction when that PR is merged; falls back to the incoming webhook (no reaction) when no bot token is set. Callers must grant `issues: write` and `pull-requests: write` |
 
@@ -97,6 +98,20 @@ The currently promoted stable major is set via the `CAMUNDA_SDK_CURRENT_STABLE_M
 | `actions/sync-readme-snippets/` | Sync README code blocks from source-of-truth example files |
 | `actions/check-example-coverage/` | Verify operation-map coverage against OpenAPI spec |
 | `actions/setup-sdk-toolchain/` | Install the language toolchain (and project dependencies) for an SDK repo, given `language: js\|python\|csharp\|go\|rust` |
+
+#### What the `camunda-sdk-automation` App can do
+
+The installation grants **read** on members and metadata, and **read/write** on
+contents, issues and pull requests. Notably there is **no `actions` permission at
+all**, so an App-token step cannot trigger a workflow, re-run a job, or even read
+another repo's run history.
+
+That is why `sdk-coverage-gap-dispatch.yml` reaches the detector with a
+`repository_dispatch` (`contents: write`) rather than a `workflow_dispatch`
+(`actions: write`). Before designing anything that drives Actions across repos,
+check this list — and prefer passing `permission-<name>` to
+`actions/create-github-app-token`, which fails loudly at mint time instead of
+leaving a 403 to surface from the call itself.
 
 #### The agent workflows
 
