@@ -149,18 +149,20 @@ jobs:
               "${AGENT_BRANCH_PREFIX}"*) ;;
               *) echo "Not an agent branch."; exit 0 ;;
             esac
-            filter=".[] | select(.headRefName == \"${RUN_HEAD_BRANCH}\")"
+            filter='.[] | select(.headRefName == env.RUN_HEAD_BRANCH)'
           else
-            filter=".[]"
+            filter='.[]'
           fi
 
           # A fork head would let an outside contributor land code by opening a PR
           # that merely looks like an agent PR, so it is excluded at the source.
+          # Branch names reach jq through `env` rather than interpolation, so a name
+          # containing a quote cannot rewrite the filter it is supposed to be data for.
           gh pr list --repo "$GH_REPO" --state open --limit 100 \
             --json number,headRefName,headRepositoryOwner,isDraft \
             --jq "[ ${filter}
-                    | select(.headRepositoryOwner.login == \"${GITHUB_REPOSITORY_OWNER}\")
-                    | select(.headRefName | startswith(\"${AGENT_BRANCH_PREFIX}\"))
+                    | select(.headRepositoryOwner.login == env.GITHUB_REPOSITORY_OWNER)
+                    | select(.headRefName | startswith(env.AGENT_BRANCH_PREFIX))
                     | select(.isDraft == false)
                     | .number
                   ] | sort | .[]" > /tmp/candidates.txt
@@ -222,7 +224,7 @@ jobs:
             # branch prefix plus the fork exclusion already narrow it to our agent.
             if ! jq -e '.author.is_bot == true' /tmp/pr.json >/dev/null; then
               # shellcheck disable=SC2016  # the backticks are markdown, not substitution
-              printf 'it was opened by `%s`, who is not the automation app' \
+              printf 'it was opened by `%s`, which is not a bot account' \
                 "$(jq -r '.author.login // "unknown"' /tmp/pr.json)"
               return
             fi
@@ -258,11 +260,21 @@ jobs:
               query($owner:String!, $name:String!, $number:Int!) {
                 repository(owner:$owner, name:$name) {
                   pullRequest(number:$number) {
-                    reviews(last: 100) { nodes { state author { login } } }
-                    reviewThreads(last: 100) { nodes { isResolved isOutdated } }
+                    reviews(last: 100) { totalCount nodes { state author { login } } }
+                    reviewThreads(last: 100) { totalCount nodes { isResolved isOutdated } }
                   }
                 }
               }' > /tmp/reviews.json
+
+            # One page is far more than these PRs ever accumulate, but a reply beyond
+            # it would be invisible here, and invisible feedback must not read as
+            # "nobody objected".
+            if jq -e '[ .data.repository.pullRequest.reviews.totalCount,
+                        .data.repository.pullRequest.reviewThreads.totalCount ]
+                      | max > 100' /tmp/reviews.json >/dev/null; then
+              printf 'it has more reviews or threads than a single page reports'
+              return
+            fi
 
             # Only each reviewer's latest *decisive* review counts, so a
             # CHANGES_REQUESTED later superseded by an approval no longer blocks.
