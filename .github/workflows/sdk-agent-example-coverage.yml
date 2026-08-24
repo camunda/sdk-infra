@@ -305,7 +305,10 @@ jobs:
              the pipeline itself looks like it needs changing, stop and say so in your
              final message instead of editing it.
           6. Commit every change you make and leave the working tree clean — uncommitted
-             work is discarded and fails the run.
+             work is discarded and fails the run. That includes files a build or
+             generator you ran changed as a side effect. Stage with `git add -A`
+             rather than naming individual paths, and stop only once
+             `git status --porcelain --untracked-files=all` prints nothing.
           7. Read AGENTS.md for the build/verification pipeline, then finish by running
              the exact commands below. They are the gate this workflow applies: a green
              lint, typecheck or test run does NOT mean they pass. Do not stop until

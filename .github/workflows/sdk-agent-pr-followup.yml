@@ -529,7 +529,14 @@ jobs:
           4. If you disagree with the feedback, do not change the code — explain your
              reasoning in your final message instead. Making no commits is a valid
              outcome and is reported as such.
-          5. Commit every change you make and leave the working tree clean.
+          5. Commit every change you make and leave the working tree clean. That
+             includes files a build or generator you ran changed as a side effect:
+             running the pipeline to check your work regenerates committed output,
+             and that output is part of your fix, not a stray artefact. Stage with
+             `git add -A` rather than naming individual paths, follow AGENTS.md on
+             whether regenerated output belongs in its own commit, and stop only
+             once `git status --porcelain --untracked-files=all` prints nothing.
+             A dirty tree fails this workflow and nothing is pushed.
           6. Read AGENTS.md for the build/verification pipeline, then finish by running
              the exact commands below. They are the gate this workflow applies: a green
              lint, typecheck or test run does NOT mean they pass. Do not stop until
