@@ -498,6 +498,7 @@ jobs:
           PR: ${{ needs.triage.outputs.pr }}
         run: |
           set -euo pipefail
+          # shellcheck disable=SC2016  # $owner and friends are GraphQL variables
           gh api graphql -f owner="${GH_REPO%%/*}" -f name="${GH_REPO##*/}" -F number="$PR" -f query='
             query($owner:String!, $name:String!, $number:Int!) {
               repository(owner:$owner, name:$name) {
@@ -689,6 +690,7 @@ jobs:
             [ -n "$thread" ] || continue
             # Best-effort: a thread deleted or resolved by a human mid-run is not a
             # reason to fail a run whose fix is already pushed.
+            # shellcheck disable=SC2016  # $threadId is a GraphQL variable
             if gh api graphql -f threadId="$thread" -f query='
                  mutation($threadId:ID!) {
                    resolveReviewThread(input:{threadId:$threadId}) {

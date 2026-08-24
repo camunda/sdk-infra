@@ -221,12 +221,14 @@ jobs:
             # account type rather than a login keeps this repo-agnostic, and the
             # branch prefix plus the fork exclusion already narrow it to our agent.
             if ! jq -e '.author.is_bot == true' /tmp/pr.json >/dev/null; then
+              # shellcheck disable=SC2016  # the backticks are markdown, not substitution
               printf 'it was opened by `%s`, who is not the automation app' \
                 "$(jq -r '.author.login // "unknown"' /tmp/pr.json)"
               return
             fi
 
             if jq -e --arg l "$HOLD_LABEL" 'any(.labels[]; .name == $l)' /tmp/pr.json >/dev/null; then
+              # shellcheck disable=SC2016  # the backticks are markdown, not substitution
               printf 'the `%s` label is set' "$HOLD_LABEL"
               return
             fi
@@ -251,6 +253,7 @@ jobs:
               fi
             fi
 
+            # shellcheck disable=SC2016  # $owner/$name/$number are GraphQL variables
             gh api graphql -f owner="$owner" -f name="$name" -F number="$pr" -f query='
               query($owner:String!, $name:String!, $number:Int!) {
                 repository(owner:$owner, name:$name) {
@@ -301,20 +304,22 @@ jobs:
             if [ -z "$reason" ]; then
               if [ "$queued" = "true" ]; then
                 echo "Already queued for auto-merge."
-              # shellcheck disable=SC2086  # merge_flags is a deliberate word list
-              elif gh pr merge "$pr" --repo "$GH_REPO" $merge_flags; then
-                echo "Queued for auto-merge."
-                gh pr comment "$pr" --repo "$GH_REPO" --body \
-                  "🤖 All auto-merge gates passed — review comments resolved, no changes requested, and the diff stays within the example-coverage set. Queued for auto-merge; GitHub will merge this once the required checks are green.
+              else
+                # shellcheck disable=SC2086  # merge_flags is a deliberate word list
+                if gh pr merge "$pr" --repo "$GH_REPO" $merge_flags; then
+                  echo "Queued for auto-merge."
+                  gh pr comment "$pr" --repo "$GH_REPO" --body \
+                    "🤖 All auto-merge gates passed — review comments resolved, no changes requested, and the diff stays within the example-coverage set. Queued for auto-merge; GitHub will merge this once the required checks are green.
 
           To stop it: add the \`${HOLD_LABEL}\` label, request changes, or press *Disable auto-merge* above." \
-                  || echo "::warning::Could not comment on #${pr}."
-              else
-                # Most likely the repo has auto-merge disabled or the base branch has
-                # no required checks — both are configuration, not a transient error,
-                # so surface it rather than retrying quietly every hour.
-                echo "::error::Could not enable auto-merge on #${pr}."
-                failed=1
+                    || echo "::warning::Could not comment on #${pr}."
+                else
+                  # Most likely the repo has auto-merge disabled or the base branch
+                  # has no required checks — both are configuration, not a transient
+                  # error, so surface it rather than retrying quietly every hour.
+                  echo "::error::Could not enable auto-merge on #${pr}."
+                  failed=1
+                fi
               fi
             elif [ "$queued" = "true" ]; then
               echo "No longer eligible (${reason}); withdrawing."
