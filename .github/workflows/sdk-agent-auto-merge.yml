@@ -1,0 +1,336 @@
+# Reusable workflow: hand a qualifying agent pull request to GitHub's auto-merge.
+#
+# Example-coverage PRs are opened by an agent, fixed up by an agent, and reviewed by
+# a bot. Left there they sit waiting on a human to press a button that adds nothing —
+# every substantive gate has already been evaluated by CI and by the reviewer.
+#
+# This workflow closes that last step. When an agent PR satisfies every gate below it
+# is queued for GitHub's native auto-merge, which squashes it the moment the required
+# status checks go green. GitHub owns the "checks are green" race; this workflow only
+# decides whether a PR is *allowed* to merge at all.
+#
+# Two ways in, mirroring sdk-agent-pr-followup:
+#   1. A CI run succeeding on an agent branch — the moment eligibility can newly
+#      become true for that PR.
+#   2. A `schedule` sweep — the catch-all, and the only workable path for anything
+#      the Copilot reviewer does. GitHub parks every run the `Copilot` actor triggers
+#      at `action_required` until a human approves it, so `pull_request_review` and
+#      `pull_request_review_thread` never fire unattended (camunda/sdk-infra#42).
+#      The sweep re-evaluates every open agent PR, which is cheap: unlike the
+#      follow-up agent it spends API calls, not Copilot runs.
+#
+# Eligibility is re-evaluated on every pass and auto-merge is *withdrawn* from a PR
+# that stops qualifying. That withdrawal is what makes the gates mean anything —
+# without it a PR that qualified once would stay queued and merge on the next green
+# run regardless of what feedback arrived in between.
+#
+# Escape hatches, in order of bluntness:
+#   - unresolve a review thread, or leave a new one   (unresolved threads block)
+#   - request changes on the pull request             (blocks until superseded)
+#   - add the hold label                              (blocks unconditionally)
+#   - press "Disable auto-merge" in the PR UI         (until the next sweep re-queues)
+#
+# The repo must have auto-merge enabled (`allow_auto_merge`) and a branch ruleset with
+# required status checks; without checks to wait on, GitHub rejects the request.
+#
+# Usage:
+#   on:
+#     schedule:
+#       - cron: '37 * * * *'
+#     workflow_run:
+#       workflows: ["PR & Branch CI"]
+#       types: [completed]
+#   jobs:
+#     auto-merge:
+#       permissions:
+#         contents: read
+#         id-token: write
+#         pull-requests: write
+#         issues: write
+#       uses: camunda/sdk-infra/.github/workflows/sdk-agent-auto-merge.yml@v1
+#       secrets:
+#         VAULT_ADDR: ${{ secrets.VAULT_ADDR }}
+#         VAULT_JWT_PATH: ${{ secrets.VAULT_JWT_PATH }}
+#         VAULT_JWT_ROLE: ${{ secrets.VAULT_JWT_ROLE }}
+#         VAULT_JWT_AUDIENCE: ${{ secrets.VAULT_JWT_AUDIENCE }}
+#       with:
+#         allowed-paths: |
+#           examples/*
+#           src/gen/*
+
+name: Agent — auto-merge
+
+on:
+  workflow_call:
+    inputs:
+      allowed-paths:
+        description: >-
+          Newline-separated globs for the paths an example-coverage PR is expected
+          to touch. A PR reaching outside this set is doing something other than
+          adding examples — most often fixing a generator hook — and is left in the
+          queue for a human. Matched with shell `case`, so a trailing `/*` matches
+          at any depth. Empty disables the check.
+        required: true
+        type: string
+      agent-branch-prefix:
+        description: 'Only branches with this prefix are eligible.'
+        required: false
+        default: 'agent/example-coverage-'
+        type: string
+      hold-label:
+        description: 'A pull request carrying this label is never queued.'
+        required: false
+        default: 'agent-hold'
+        type: string
+      merge-method:
+        description: 'squash, merge, or rebase.'
+        required: false
+        default: 'squash'
+        type: string
+      delete-branch:
+        description: 'Delete the head branch after merging.'
+        required: false
+        default: true
+        type: boolean
+      runs-on:
+        required: false
+        default: 'ubuntu-24.04'
+        type: string
+      timeout-minutes:
+        required: false
+        default: 15
+        type: number
+    secrets:
+      # Auto-merge is requested with an App token, not GITHUB_TOKEN: a merge
+      # attributed to `github-actions[bot]` does not trigger further workflow runs,
+      # which would silently strand the release workflow that runs on push to main.
+      # Passed explicitly rather than inherited, matching sdk-agent-pr-followup —
+      # declaring them here is what makes explicit passing work at all.
+      VAULT_ADDR:
+        required: true
+      VAULT_JWT_PATH:
+        required: true
+      VAULT_JWT_ROLE:
+        required: true
+      VAULT_JWT_AUDIENCE:
+        required: true
+
+jobs:
+  auto-merge:
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    # Serialised per repo: two passes evaluating the same PR could otherwise queue
+    # and withdraw it in either order, and the loser's answer would stick.
+    concurrency:
+      group: sdk-agent-auto-merge-${{ github.repository }}
+      cancel-in-progress: false
+    env:
+      AGENT_BRANCH_PREFIX: ${{ inputs.agent-branch-prefix }}
+      ALLOWED_PATHS: ${{ inputs.allowed-paths }}
+      HOLD_LABEL: ${{ inputs.hold-label }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Select the pull requests to evaluate
+        id: select
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+          echo "any=false" >> "$GITHUB_OUTPUT"
+
+          if [ "$EVENT" = "workflow_run" ]; then
+            # A failing run is the follow-up agent's cue, not ours, and re-evaluating
+            # here would only ever reach the same "not mergeable" answer.
+            [ "$RUN_CONCLUSION" = "success" ] || { echo "CI concluded ${RUN_CONCLUSION}; nothing to do."; exit 0; }
+            case "$RUN_HEAD_BRANCH" in
+              "${AGENT_BRANCH_PREFIX}"*) ;;
+              *) echo "Not an agent branch."; exit 0 ;;
+            esac
+            filter=".[] | select(.headRefName == \"${RUN_HEAD_BRANCH}\")"
+          else
+            filter=".[]"
+          fi
+
+          # A fork head would let an outside contributor land code by opening a PR
+          # that merely looks like an agent PR, so it is excluded at the source.
+          gh pr list --repo "$GH_REPO" --state open --limit 100 \
+            --json number,headRefName,headRepositoryOwner,isDraft \
+            --jq "[ ${filter}
+                    | select(.headRepositoryOwner.login == \"${GITHUB_REPOSITORY_OWNER}\")
+                    | select(.headRefName | startswith(\"${AGENT_BRANCH_PREFIX}\"))
+                    | select(.isDraft == false)
+                    | .number
+                  ] | sort | .[]" > /tmp/candidates.txt
+
+          count="$(wc -l < /tmp/candidates.txt)"
+          [ "$count" -gt 0 ] || { echo "No open agent pull requests."; exit 0; }
+          echo "Evaluating ${count} pull request(s): $(tr '\n' ' ' < /tmp/candidates.txt)"
+          echo "any=true" >> "$GITHUB_OUTPUT"
+
+      # Minted before the loop rather than inside it: one token serves every PR, and
+      # a Vault round trip per PR would be the slowest part of the sweep.
+      - name: Import secrets
+        id: secrets
+        if: steps.select.outputs.any == 'true'
+        uses: hashicorp/vault-action@v4.0.0
+        with:
+          url: ${{ secrets.VAULT_ADDR }}
+          method: jwt
+          path: ${{ secrets.VAULT_JWT_PATH }}
+          role: ${{ secrets.VAULT_JWT_ROLE }}
+          jwtGithubAudience: ${{ secrets.VAULT_JWT_AUDIENCE }}
+          exportEnv: false
+          secrets: |
+            secret/data/products/agentic-experience/github.com/apps/camunda/camunda-sdk-automation GITHUB_APP_ID | APP_ID ;
+            secret/data/products/agentic-experience/github.com/apps/camunda/camunda-sdk-automation GITHUB_APP_PRIVATE_KEY | APP_PRIVATE_KEY ;
+
+      - name: Generate GitHub App token
+        id: app-token
+        if: steps.select.outputs.any == 'true'
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ steps.secrets.outputs.APP_ID }}
+          private-key: ${{ steps.secrets.outputs.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Queue or withdraw each pull request
+        if: steps.select.outputs.any == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          MERGE_METHOD: ${{ inputs.merge-method }}
+          DELETE_BRANCH: ${{ inputs.delete-branch }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          owner="${GH_REPO%%/*}"
+          name="${GH_REPO##*/}"
+
+          # Returns the blocking reason on stdout, or nothing when the PR qualifies.
+          ineligible_reason() {
+            pr="$1"
+
+            gh pr view "$pr" --repo "$GH_REPO" \
+              --json author,autoMergeRequest,labels,files > /tmp/pr.json
+
+            # The branch prefix is not identity — anyone with push access can create
+            # one — so the PR must actually have been opened by an App. Checking the
+            # account type rather than a login keeps this repo-agnostic, and the
+            # branch prefix plus the fork exclusion already narrow it to our agent.
+            if ! jq -e '.author.is_bot == true' /tmp/pr.json >/dev/null; then
+              printf 'it was opened by `%s`, who is not the automation app' \
+                "$(jq -r '.author.login // "unknown"' /tmp/pr.json)"
+              return
+            fi
+
+            if jq -e --arg l "$HOLD_LABEL" 'any(.labels[]; .name == $l)' /tmp/pr.json >/dev/null; then
+              printf 'the `%s` label is set' "$HOLD_LABEL"
+              return
+            fi
+
+            if [ -n "${ALLOWED_PATHS//[[:space:]]/}" ]; then
+              unexpected=""
+              while IFS= read -r path; do
+                [ -n "$path" ] || continue
+                ok=false
+                while IFS= read -r pattern; do
+                  [ -n "$pattern" ] || continue
+                  # shellcheck disable=SC2254  # unquoted so the glob is a glob
+                  case "$path" in
+                    $pattern) ok=true; break ;;
+                  esac
+                done <<< "$ALLOWED_PATHS"
+                [ "$ok" = "true" ] || unexpected="${unexpected}${unexpected:+, }\`${path}\`"
+              done <<< "$(jq -r '.files[].path' /tmp/pr.json)"
+              if [ -n "$unexpected" ]; then
+                printf 'it changes files outside the example-coverage set: %s' "$unexpected"
+                return
+              fi
+            fi
+
+            gh api graphql -f owner="$owner" -f name="$name" -F number="$pr" -f query='
+              query($owner:String!, $name:String!, $number:Int!) {
+                repository(owner:$owner, name:$name) {
+                  pullRequest(number:$number) {
+                    reviews(last: 100) { nodes { state author { login } } }
+                    reviewThreads(last: 100) { nodes { isResolved isOutdated } }
+                  }
+                }
+              }' > /tmp/reviews.json
+
+            # Only each reviewer's latest *decisive* review counts, so a
+            # CHANGES_REQUESTED later superseded by an approval no longer blocks.
+            # `reviewDecision` cannot stand in for this: it is null whenever no
+            # approval is required, which is the case on every one of these repos.
+            requested="$(jq -r '
+              [ .data.repository.pullRequest.reviews.nodes[]
+                | select(.state == "CHANGES_REQUESTED" or .state == "APPROVED" or .state == "DISMISSED") ]
+              | group_by(.author.login) | map(last)
+              | map(select(.state == "CHANGES_REQUESTED") | .author.login)
+              | join(", ")' /tmp/reviews.json)"
+            if [ -n "$requested" ]; then
+              printf 'changes are requested by %s' "$requested"
+              return
+            fi
+
+            # Outdated threads are excluded: they annotate lines that no longer
+            # exist, so no push can resolve them and they would deadlock the queue.
+            unresolved="$(jq -r '
+              [ .data.repository.pullRequest.reviewThreads.nodes[]
+                | select(.isResolved == false and .isOutdated == false) ] | length' /tmp/reviews.json)"
+            if [ "$unresolved" -ne 0 ]; then
+              printf '%s review thread(s) are unresolved' "$unresolved"
+              return
+            fi
+          }
+
+          merge_flags="--auto --${MERGE_METHOD}"
+          [ "$DELETE_BRANCH" = "true" ] && merge_flags="${merge_flags} --delete-branch"
+
+          failed=0
+          while IFS= read -r pr; do
+            [ -n "$pr" ] || continue
+            echo "::group::PR #${pr}"
+
+            reason="$(ineligible_reason "$pr")"
+            queued="$(jq -r 'if .autoMergeRequest then "true" else "false" end' /tmp/pr.json)"
+
+            if [ -z "$reason" ]; then
+              if [ "$queued" = "true" ]; then
+                echo "Already queued for auto-merge."
+              # shellcheck disable=SC2086  # merge_flags is a deliberate word list
+              elif gh pr merge "$pr" --repo "$GH_REPO" $merge_flags; then
+                echo "Queued for auto-merge."
+                gh pr comment "$pr" --repo "$GH_REPO" --body \
+                  "🤖 All auto-merge gates passed — review comments resolved, no changes requested, and the diff stays within the example-coverage set. Queued for auto-merge; GitHub will merge this once the required checks are green.
+
+          To stop it: add the \`${HOLD_LABEL}\` label, request changes, or press *Disable auto-merge* above." \
+                  || echo "::warning::Could not comment on #${pr}."
+              else
+                # Most likely the repo has auto-merge disabled or the base branch has
+                # no required checks — both are configuration, not a transient error,
+                # so surface it rather than retrying quietly every hour.
+                echo "::error::Could not enable auto-merge on #${pr}."
+                failed=1
+              fi
+            elif [ "$queued" = "true" ]; then
+              echo "No longer eligible (${reason}); withdrawing."
+              gh pr merge "$pr" --repo "$GH_REPO" --disable-auto \
+                || echo "::warning::Could not disable auto-merge on #${pr}."
+              gh pr comment "$pr" --repo "$GH_REPO" --body \
+                "🤖 Removed this PR from the auto-merge queue because ${reason}. I'll re-queue it once that is addressed." \
+                || echo "::warning::Could not comment on #${pr}."
+            else
+              # Silent: the sweep sees every open agent PR every hour, and most of
+              # them are legitimately not ready. Commenting here would be a stream
+              # of noise on PRs that are simply still in progress.
+              echo "Not eligible: ${reason}"
+            fi
+
+            echo "::endgroup::"
+          done < /tmp/candidates.txt
+
+          exit "$failed"
