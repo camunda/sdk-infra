@@ -38,7 +38,11 @@ jobs:
         run: |
           set -euo pipefail
           url="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
-          curl --fail --silent --show-error --location "$url" -o /tmp/actionlint.tar.gz
+          # The checksum below is what makes a retry safe: a truncated or corrupted
+          # download fails the check rather than being linted against.
+          curl --fail --silent --show-error --location \
+            --retry 5 --retry-all-errors --retry-delay 3 \
+            --connect-timeout 10 --max-time 120 "$url" -o /tmp/actionlint.tar.gz
           echo "${ACTIONLINT_SHA256}  /tmp/actionlint.tar.gz" | sha256sum --check --strict -
           tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
           /tmp/actionlint --version

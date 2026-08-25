@@ -76,10 +76,16 @@ jobs:
           for repo in orchestration-cluster-api-js orchestration-cluster-api-python \
                       orchestration-cluster-api-csharp orchestration-cluster-api-go \
                       orchestration-cluster-api-rust; do
-            curl -sfL \
+            # Substituting an empty map on failure would make every operation look
+            # uncovered and file a bogus issue against that SDK, so a fetch that
+            # cannot be completed after retries has to stop the job instead.
+            curl -sfL --retry 5 --retry-all-errors --retry-delay 3 \
+              --connect-timeout 10 --max-time 60 \
               -H "Authorization: token ${GH_TOKEN}" \
               "https://raw.githubusercontent.com/camunda/${repo}/main/examples/operation-map.json" \
-              -o "sdk-maps/${repo}.json" || echo "{}" > "sdk-maps/${repo}.json"
+              -o "sdk-maps/${repo}.json"
+            jq -e 'type == "object"' "sdk-maps/${repo}.json" > /dev/null \
+              || { echo "::error::${repo}: operation-map.json is not a JSON object"; exit 1; }
           done
 
       - name: Compare spec against SDK coverage
