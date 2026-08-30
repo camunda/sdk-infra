@@ -21,7 +21,7 @@ inputs:
     required: false
     default: ''
   upload-logs:
-    description: 'Upload Docker logs as artifact on failure.'
+    description: 'Upload the captured Docker logs as an artifact.'
     required: false
     default: 'true'
   artifact-name:
@@ -64,7 +64,11 @@ runs:
         docker compose -f ${{ steps.resolve.outputs.file }} down -v || true
 
     - name: Upload logs artifact
-      if: failure() && inputs.upload-logs == 'true'
+      # Not `failure()`: inside a composite that tests *this action's* steps, and the two
+      # above end in `|| true`, so it never fired -- the artifact was missing from every
+      # run for the whole time it was meant to be diagnosing them. The caller already
+      # gates this step with `if: always()`, so uploading unconditionally is the fix.
+      if: always() && inputs.upload-logs == 'true'
       uses: actions/upload-artifact@v4
       with:
         name: ${{ inputs.artifact-name }}

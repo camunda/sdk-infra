@@ -1,7 +1,7 @@
 # Composite action: Start a Camunda stack for integration testing.
 #
 # Starts the appropriate Docker Compose stack, polls the health endpoint,
-# and reports readiness. On failure, captures and uploads Docker logs.
+# and reports readiness. Docker logs are captured by the stop-camunda action.
 #
 # Usage:
 #   - uses: camunda/sdk-infra/actions/start-camunda@v1
