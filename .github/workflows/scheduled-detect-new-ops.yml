@@ -46,7 +46,7 @@ jobs:
         run: |
           mkdir -p current-spec
           npx --yes camunda-schema-bundler \
-            --ref main \
+            --ref stable/8.10 \
             --deref-path-local \
             --output-spec current-spec/rest-api.bundle.json \
             --output-metadata current-spec/spec-metadata.json
