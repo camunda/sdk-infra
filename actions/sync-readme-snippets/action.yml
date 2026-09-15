@@ -13,7 +13,7 @@ description: Synchronize code snippets in README.md from compilable example file
 
 inputs:
   lang:
-    description: 'Language for region tag detection: csharp, python, or typescript.'
+    description: 'Language for region tag detection: csharp, python, typescript, java, or go.'
     required: true
   check:
     description: 'Check mode (exit 1 if out of sync) rather than updating in-place.'
