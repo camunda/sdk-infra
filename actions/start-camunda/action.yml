@@ -48,7 +48,9 @@ runs:
         if [ -n "${{ inputs.docker-dir }}" ]; then
           echo "dir=${{ inputs.docker-dir }}" >> $GITHUB_OUTPUT
         else
-          echo "dir=${{ github.action_path }}/../docker" >> $GITHUB_OUTPUT
+          # Two levels up: github.action_path is actions/start-camunda, and the
+          # compose files live at the repo root, as ../../scripts does elsewhere.
+          echo "dir=${{ github.action_path }}/../../docker" >> $GITHUB_OUTPUT
         fi
 
         if [ "${{ inputs.stack }}" == "full" ]; then
