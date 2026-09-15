@@ -21,7 +21,16 @@ Downstream consumers — changes here affect all of them, so test thoroughly:
 - [`orchestration-cluster-api-python`](https://github.com/camunda/orchestration-cluster-api-python) — Python SDK
 - [`orchestration-cluster-api-go`](https://github.com/camunda/orchestration-cluster-api-go) — Go SDK
 - [`orchestration-cluster-api-rust`](https://github.com/camunda/orchestration-cluster-api-rust) — Rust SDK
+- [`orchestration-cluster-api-java`](https://github.com/camunda/orchestration-cluster-api-java) — Java SDK
 - [`c8ctl`](https://github.com/camunda/c8ctl) — CLI (transitive, via JS SDK)
+
+> [!NOTE]
+> The Java SDK is **not** yet wired into `sdk-detect-new-ops.yml`. That workflow fetches each
+> SDK's `examples/operation-map.json` from `raw.githubusercontent.com` using `github.token`,
+> which is scoped to sdk-infra and cannot read another repo that is not public. The other five
+> SDKs are public; the Java repo is currently `INTERNAL`, so its fetch would 404 and, because
+> the loop is `set -euo pipefail`, take down coverage detection for every SDK. Add Java to that
+> workflow once the repo is public, or move the fetch to the App token.
 
 **Path map:**
 
@@ -97,7 +106,7 @@ The currently promoted stable major is set via the `CAMUNDA_SDK_CURRENT_STABLE_M
 | `actions/stop-camunda/` | Stop and clean up Docker stack |
 | `actions/sync-readme-snippets/` | Sync README code blocks from source-of-truth example files |
 | `actions/check-example-coverage/` | Verify operation-map coverage against OpenAPI spec |
-| `actions/setup-sdk-toolchain/` | Install the language toolchain (and project dependencies) for an SDK repo, given `language: js\|python\|csharp\|go\|rust` |
+| `actions/setup-sdk-toolchain/` | Install the language toolchain (and project dependencies) for an SDK repo, given `language: js\|python\|csharp\|go\|rust\|java` |
 
 #### What the `camunda-sdk-automation` App can do
 

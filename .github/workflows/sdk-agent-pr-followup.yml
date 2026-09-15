@@ -68,7 +68,7 @@ on:
   workflow_call:
     inputs:
       language:
-        description: 'SDK language: js, python, csharp, go, or rust.'
+        description: 'SDK language: js, python, csharp, go, rust, or java.'
         required: true
         type: string
       verify-commands:

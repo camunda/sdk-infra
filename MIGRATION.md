@@ -133,7 +133,7 @@ You can optionally delete your repo's `docker/` directory entirely, or keep it f
 ```yaml
 - uses: camunda/sdk-infra/actions/sync-readme-snippets@v1
   with:
-    lang: python    # or: csharp, typescript
+    lang: python    # or: csharp, typescript, java, go
     check: true
 ```
 
