@@ -12,6 +12,10 @@
 #   jobs:
 #     detect:
 #       needs: bundle
+#       permissions:
+#         contents: read
+#         issues: write
+#         id-token: write  # mint GitHub OIDC token for Vault JWT auth
 #       uses: camunda/sdk-infra/.github/workflows/sdk-detect-new-ops.yml@v1
 #       with:
 #         spec-artifact: bundled-spec
