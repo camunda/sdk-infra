@@ -17,8 +17,9 @@
 #         spec-artifact: bundled-spec
 #       secrets:
 #         vault-addr: ${{ secrets.VAULT_ADDR }}
-#         vault-role-id: ${{ secrets.VAULT_ROLE_ID }}
-#         vault-secret-id: ${{ secrets.VAULT_SECRET_ID }}
+#         vault-jwt-role: ${{ secrets.VAULT_JWT_ROLE }}
+#         vault-jwt-path: ${{ secrets.VAULT_JWT_PATH }}
+#         vault-jwt-audience: ${{ secrets.VAULT_JWT_AUDIENCE }}
 
 name: Detect New Operations
 
@@ -37,11 +38,14 @@ on:
       vault-addr:
         description: 'Vault server URL'
         required: false
-      vault-role-id:
-        description: 'Vault AppRole role ID'
+      vault-jwt-role:
+        description: 'Vault JWT role'
         required: false
-      vault-secret-id:
-        description: 'Vault AppRole secret ID'
+      vault-jwt-path:
+        description: 'Vault JWT auth mount path'
+        required: false
+      vault-jwt-audience:
+        description: 'Vault JWT audience'
         required: false
     outputs:
       new-operations:
@@ -57,6 +61,7 @@ jobs:
     permissions:
       contents: read
       issues: write
+      id-token: write  # mint GitHub OIDC token for Vault JWT auth
     outputs:
       uncovered: ${{ steps.diff.outputs.uncovered }}
     steps:
@@ -155,9 +160,10 @@ jobs:
         continue-on-error: true
         with:
           url: ${{ secrets['vault-addr'] }}
-          method: approle
-          roleId: ${{ secrets['vault-role-id'] }}
-          secretId: ${{ secrets['vault-secret-id'] }}
+          method: jwt
+          role: ${{ secrets['vault-jwt-role'] }}
+          path: ${{ secrets['vault-jwt-path'] }}
+          jwtGithubAudience: ${{ secrets['vault-jwt-audience'] }}
           secrets: |
             secret/data/products/agentic-experience/github.com/apps/camunda/camunda-sdk-automation GITHUB_APP_ID;
             secret/data/products/agentic-experience/github.com/apps/camunda/camunda-sdk-automation GITHUB_APP_PRIVATE_KEY;
