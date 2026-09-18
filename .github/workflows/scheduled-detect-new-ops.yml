@@ -65,11 +65,13 @@ jobs:
     permissions:
       contents: read
       issues: write
+      id-token: write  # mint GitHub OIDC token for Vault JWT auth
     uses: ./.github/workflows/sdk-detect-new-ops.yml
     with:
       spec-artifact: bundled-spec
     secrets:
       vault-addr: ${{ secrets.VAULT_ADDR }}
-      vault-role-id: ${{ secrets.VAULT_ROLE_ID }}
-      vault-secret-id: ${{ secrets.VAULT_SECRET_ID }}
+      vault-jwt-role: ${{ secrets.VAULT_JWT_ROLE }}
+      vault-jwt-path: ${{ secrets.VAULT_JWT_PATH }}
+      vault-jwt-audience: ${{ secrets.VAULT_JWT_AUDIENCE }}
       sdk-issue-token: ${{ secrets.SDK_ISSUE_TOKEN }}
