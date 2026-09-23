@@ -109,9 +109,14 @@ on:
         default: 'v1'
         type: string
       copilot-model:
-        description: 'Model passed to the Copilot CLI.'
+        # `auto` rather than a pinned name: a pin silently outlives the model it
+        # names. `claude-sonnet-4.6` was retired upstream and every SDK's agent
+        # run then died at the CLI invocation, so the coverage issues it exists
+        # to close sat untouched. Callers can still pin when they need a fixed
+        # model; verify-commands, not the model name, is what gates the output.
+        description: 'Model passed to the Copilot CLI. `auto` lets Copilot pick.'
         required: false
-        default: 'claude-sonnet-4.6'
+        default: 'auto'
         type: string
       runs-on:
         required: false
