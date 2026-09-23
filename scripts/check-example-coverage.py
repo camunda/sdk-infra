@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import sys
 from pathlib import Path
@@ -123,7 +124,9 @@ def check_coverage(
     missing = [op for op in spec_ops if key_converter(op["operationId"]) not in map_keys]
 
     total = len(spec_ops)
-    pct = round(len(covered) / total * 100) if total > 0 else 0
+    # Floor, not round: 243/244 rounds to "100%" and reads as passing next to a
+    # non-zero Missing count. Only full coverage may print 100.
+    pct = math.floor(len(covered) / total * 100) if total > 0 else 0
 
     print(f"Spec operations: {total}")
     print(f"Covered:         {len(covered)}")
