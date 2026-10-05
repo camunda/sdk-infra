@@ -7,7 +7,7 @@
 #   - uses: camunda/sdk-infra/actions/start-camunda@v1
 #     with:
 #       stack: full
-#       version: 8.9.0
+#       version: 8.10.0
 
 name: Start Camunda
 description: Start a Camunda Docker Compose stack for integration testing.

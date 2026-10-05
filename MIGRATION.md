@@ -110,7 +110,7 @@ guard:
 - uses: camunda/sdk-infra/actions/start-camunda@v1
   with:
     stack: full
-    version: 8.9.0
+    version: 8.10.0
 
 # ... run tests ...
 

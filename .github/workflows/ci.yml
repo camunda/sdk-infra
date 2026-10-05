@@ -57,3 +57,37 @@ jobs:
       - name: Run actionlint
         run: /tmp/actionlint -color
 
+  docker-stacks:
+    # Every SDK passes its own docker-dir, so nothing else boots the bundled stacks.
+    name: Bundled stack (${{ matrix.stack }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - stack: simple
+            file: docker-compose.yaml
+          - stack: full
+            file: docker-compose-full.yaml
+    steps:
+      - uses: actions/checkout@v4
+
+      # No docker-dir: exercise the bundled-stack default that consumers fall back to.
+      - uses: ./actions/start-camunda
+        with:
+          stack: ${{ matrix.stack }}
+
+      - name: Wait for every service to be healthy
+        # start-camunda only polls Camunda; this also covers Elasticsearch and Connectors.
+        working-directory: docker
+        run: docker compose -f ${{ matrix.file }} up -d --wait --wait-timeout 300
+
+      - name: REST API answers
+        run: curl --fail --silent --show-error http://localhost:8080/v2/topology
+
+      - uses: ./actions/stop-camunda
+        if: always()
+        with:
+          stack: ${{ matrix.stack }}
+          artifact-name: docker-logs-${{ matrix.stack }}
+
