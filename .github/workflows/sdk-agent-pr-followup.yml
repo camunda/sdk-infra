@@ -344,8 +344,15 @@ jobs:
               exit 0
             fi
             next=$((used + 1))
-            gh pr edit "$pr" --repo "$GH_REPO" --add-label "agent-attempt-${next}" \
-              || echo "::warning::Could not label #${pr}."
+            # The budget lives only in these labels: an attempt that cannot be
+            # recorded must not run, or the cap never advances.
+            gh label create "agent-attempt-${next}" --repo "$GH_REPO" \
+              --color ededed --description "Automatic agent follow-up attempt ${next}" \
+              >/dev/null 2>&1 || true
+            if ! gh pr edit "$pr" --repo "$GH_REPO" --add-label "agent-attempt-${next}"; then
+              echo "::error::Could not record attempt ${next} on #${pr}; not running the agent."
+              exit 0
+            fi
           fi
 
           {
