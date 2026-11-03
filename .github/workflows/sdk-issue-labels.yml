@@ -1,0 +1,105 @@
+# Reusable workflow: label issues from the issue form and from plain lines in the body.
+#
+# Issues opened in the browser (issue forms, templates/ISSUE_TEMPLATE/) and over the API by
+# people or agents are labelled the same way. The rules are in scripts/issue-triage.mjs:
+#   - form answers and "Type: / Found-by: / Affects: / Severity:" lines become labels;
+#   - bugs from anyone outside `team` default to found-by/user (they escaped to a user);
+#   - a bug still missing a detection layer, release line or severity gets needs-triage and one
+#     comment saying what to add; the comment is removed and needs-triage dropped once complete;
+#   - labels already on the issue win, and nothing else is ever removed.
+# Issues created with a workflow's GITHUB_TOKEN raise no `issues` event for other workflows, so
+# this never runs for them; such callers must set the labels directly (see policies/AGENTS.md).
+# These labels feed the SDK defect metrics: https://camunda.github.io/sdk-quality-metrics/
+#
+# Usage (.github/workflows/issue-labels.yml in the SDK repo):
+#   on:
+#     issues:
+#       types: [opened, edited, reopened, labeled, unlabeled]
+#   permissions:
+#     issues: write
+#   jobs:
+#     label:
+#       uses: camunda/sdk-infra/.github/workflows/sdk-issue-labels.yml@v1
+
+name: Issue labels
+
+on:
+  workflow_call:
+    inputs:
+      team:
+        description: >-
+          Comma-separated GitHub logins of the SDK team. Bugs from anyone else (except bots)
+          default to found-by/user.
+        required: false
+        default: 'jwulf,emilyoram,bojtospeter'
+        type: string
+      bot-pattern:
+        description: >-
+          Regular expression for bot and agent logins. They are treated like the team: never
+          defaulted to found-by/user.
+        required: false
+        default: '\[bot\]$|^copilot|^github-actions|^dependabot|^renovate'
+        type: string
+      sdk-infra-ref:
+        description: 'Ref of camunda/sdk-infra to load scripts/issue-triage.mjs from.'
+        required: false
+        default: 'v1'
+        type: string
+
+permissions:
+  issues: write
+
+concurrency:
+  group: issue-labels-${{ github.repository }}-${{ github.event.issue.number }}
+
+jobs:
+  label:
+    if: github.event.issue && !github.event.issue.pull_request
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Loaded from a checkout rather than inlined so the rules have one tested implementation,
+      # and from `sdk-infra-ref` so a branch build of this workflow runs the branch's rules.
+      - name: Check out the triage rules
+        uses: actions/checkout@v6
+        with:
+          repository: camunda/sdk-infra
+          ref: ${{ inputs.sdk-infra-ref }}
+          path: .sdk-infra
+          sparse-checkout: scripts/issue-triage.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Label the issue
+        uses: actions/github-script@v9
+        env:
+          TEAM: ${{ inputs.team }}
+          BOT_PATTERN: ${{ inputs.bot-pattern }}
+        with:
+          script: |
+            const { triage } = await import(`${process.env.GITHUB_WORKSPACE}/.sdk-infra/scripts/issue-triage.mjs`);
+            const MARK = '<!-- issue-labelling -->';
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.issue.number;
+            // Re-read the issue: the event payload is a snapshot from when the event fired, and a
+            // queued run must see labels a maintainer has added since, so existing labels still win.
+            const { data: issue } = await github.rest.issues.get({ owner, repo, issue_number });
+            const available = (await github.paginate(github.rest.issues.listLabelsForRepo, { owner, repo, per_page: 100 })).map((l) => l.name);
+            const r = triage({
+              body: issue.body,
+              labels: issue.labels.map((l) => l.name),
+              author: issue.user.login,
+              team: process.env.TEAM.split(',').map((s) => s.trim()).filter(Boolean),
+              botPattern: process.env.BOT_PATTERN,
+              available,
+            });
+            core.info(JSON.stringify(r));
+            if (r.add.length) await github.rest.issues.addLabels({ owner, repo, issue_number, labels: r.add });
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number, per_page: 100 });
+            // Only our own reminder: anyone can post a comment starting with the marker.
+            const mine = comments.find((c) => c.user && c.user.login === 'github-actions[bot]' && c.body && c.body.startsWith(MARK));
+            // A bug reclassified as a non-bug: drop the needs-triage we added along with our reminder.
+            if (r.removeTriage || (r.removeTriageIfReminded && mine)) await github.rest.issues.removeLabel({ owner, repo, issue_number, name: 'needs-triage' }).catch(() => {});
+            if (r.comment && !mine) await github.rest.issues.createComment({ owner, repo, issue_number, body: r.comment });
+            else if (r.comment && mine.body !== r.comment) await github.rest.issues.updateComment({ owner, repo, comment_id: mine.id, body: r.comment });
+            else if (!r.comment && mine) await github.rest.issues.deleteComment({ owner, repo, comment_id: mine.id });

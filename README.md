@@ -13,6 +13,7 @@ Shared infrastructure for Camunda SDK repositories. This repo provides reusable 
 | `configs/` | Shared commitlint and semantic-release base configurations |
 | `schema/` | JSON schema for `operation-map.json` validation |
 | `policies/` | Canonical contributor guidelines (AGENTS.md) |
+| `templates/` | Canonical issue forms for SDK repos |
 
 ## Quick start for SDK repos
 
@@ -116,7 +117,23 @@ which caused it. `sdk-coverage-gap-dispatch.yml` reacts to that by dispatching t
 detector above, so the gap is fixed once against `main`, and leaves a single comment
 explaining the red check rather than pushing a commit onto someone else's branch.
 
-### 7. Shared configs
+### 7. Issue labelling (reusable workflow + issue forms)
+
+Labels issues from the issue form and from `Type:` / `Found-by:` / `Affects:` / `Severity:` lines in the body, so issues opened by agents over the API are labelled the same way as ones from the browser. See [policies/AGENTS.md](policies/AGENTS.md#opening-issues) for the conventions. Copy [templates/ISSUE_TEMPLATE/](templates/ISSUE_TEMPLATE/) to `.github/ISSUE_TEMPLATE/` (GitHub reads forms only from the repo itself), and add:
+
+```yaml
+# .github/workflows/issue-labels.yml
+on:
+  issues:
+    types: [opened, edited, reopened, labeled, unlabeled]
+permissions:
+  issues: write
+jobs:
+  label:
+    uses: camunda/sdk-infra/.github/workflows/sdk-issue-labels.yml@v1
+```
+
+### 8. Shared configs
 
 ```js
 // commitlint.config.cjs
