@@ -19,7 +19,7 @@ export function triage({ body, labels, author, team, botPattern, available }) {
     for (const h of headings) {
       const m = text.match(new RegExp(`^#{2,4}\\s*${h}[?:]?\\s*\\n+([^\\n]+)`, 'im'));
       const v = m && m[m.length - 1].trim();
-      if (v && !/^_no response_$/i.test(v)) return v;
+      if (v && !/^(_no response_|don[’']?t know|unknown|not sure)$/i.test(v)) return v;
     }
     const m = text.match(new RegExp(`^[\\s>*_-]*${key}\\**:\\**[ \\t]*([^\\n]+)`, 'im'));
     return m ? m[1].trim() : null;

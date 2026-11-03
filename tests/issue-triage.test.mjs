@@ -59,3 +59,10 @@ test('labels the repo does not have are never added', () => {
   const r = triage({ ...base, available: ['bug'], body: 'Found-by: ci\nAffects: main', labels: ['bug'], author: 'jwulf' });
   assert.deepEqual(r.add, []);
 });
+
+test("form \"Don't know\" answers fall through to trailer lines", () => {
+  const body = "### Which release line?\n\nDon't know\n\n### Severity\n\nDon’t know\n\nAffects: stable\nSeverity: high\nFound-by: ci";
+  const r = triage({ ...base, body, labels: ['bug'], author: 'jwulf' });
+  assert.deepEqual(r.add.sort(), ['affects/stable', 'found-by/ci', 'severity/high']);
+  assert.equal(r.comment, null);
+});
