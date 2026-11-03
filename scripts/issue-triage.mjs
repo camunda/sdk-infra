@@ -52,7 +52,10 @@ export function triage({ body, labels, author, team, botPattern, available }) {
 
   if (!['bug', 'enhancement', 'documentation', 'question', 'new-operations', 'defect', 'kind/bug'].some((l) => has.has(l))) want(pick(answer(['type'], 'type'), TYPE));
   const isBug = ['bug', 'defect', 'kind/bug'].some((l) => has.has(l) || add.has(l));
-  if (!isBug) return { add: [...add], missing: [], comment: null, removeTriage: false };
+  // Not (or no longer) a bug: the bug requirements no longer apply. The workflow deletes its
+  // reminder; it also drops needs-triage, but only when that reminder exists, so a needs-triage a
+  // maintainer set on a non-bug by hand is left alone.
+  if (!isBug) return { add: [...add], missing: [], comment: null, removeTriage: false, removeTriageIfReminded: has.has('needs-triage') };
 
   if (!any('found-by/')) {
     const found = pick(answer(['how was this found\\??', 'found[- ]by'], 'found[- ]by'), FOUND);
@@ -84,5 +87,5 @@ export function triage({ body, labels, author, team, botPattern, available }) {
         'Why: these feed the SDK defect metrics (https://camunda.github.io/sdk-quality-metrics/): where defects are caught, and how long they live. Conventions: https://github.com/camunda/sdk-infra/blob/main/policies/AGENTS.md#opening-issues',
       ].join('\n')
     : null;
-  return { add: [...add], missing: missing.map((m) => m[0]), comment, removeTriage: !missing.length && has.has('needs-triage') };
+  return { add: [...add], missing: missing.map((m) => m[0]), comment, removeTriage: !missing.length && has.has('needs-triage'), removeTriageIfReminded: false };
 }

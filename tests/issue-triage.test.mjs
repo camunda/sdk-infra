@@ -75,3 +75,12 @@ test('CI integration test runs are CI detections, not integration', () => {
   const r = triage({ ...base, body: 'Found-by: integration\nAffects: main\nSeverity: low', labels: ['bug'], author: 'jwulf' });
   assert.ok(r.add.includes('found-by/integration'));
 });
+
+test('a bug reclassified as a non-bug signals needs-triage cleanup (gated on the reminder)', () => {
+  const r = triage({ ...base, body: 'x', labels: ['enhancement', 'needs-triage'], author: 'jwulf' });
+  assert.equal(r.comment, null);
+  assert.equal(r.removeTriage, false);
+  assert.equal(r.removeTriageIfReminded, true);
+  const plain = triage({ ...base, body: 'x', labels: ['enhancement'], author: 'jwulf' });
+  assert.equal(plain.removeTriageIfReminded, false);
+});
