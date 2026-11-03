@@ -41,6 +41,7 @@ Downstream consumers — changes here affect all of them, so test thoroughly:
 | `schema/` | JSON schemas (e.g. `operation-map.schema.json`) — published to npm |
 | `docker/` | Shared Docker Compose files for integration testing — published to npm |
 | `policies/` | Canonical contributor guidelines (`AGENTS.md`) — published to npm |
+| `templates/` | Canonical issue forms (`ISSUE_TEMPLATE/`) for SDK repos to copy — GitHub only reads forms from each repo's own `.github/` — published to npm |
 | `actions/` | Composite GitHub Actions (start-camunda, sync-readme-snippets, check-example-coverage, setup-sdk-toolchain) — **not** published to npm |
 | `.github/workflows/` | Reusable CI workflows (spec bundling, commitlint, spec-ref guard, detect new ops, agent example coverage) — consumed via `uses:` |
 
@@ -97,6 +98,7 @@ The currently promoted stable major is set via the `CAMUNDA_SDK_CURRENT_STABLE_M
 | `sdk-coverage-gap-dispatch.yml` | On a CI failure whose failing *step* is the example-coverage check, send a `coverage-gap` `repository_dispatch` to `scheduled-detect-new-ops.yml` instead of touching the PR, and comment once to explain the unrelated red check. For the repos that bundle the spec live (js, python, csharp), where upstream movement reddens every open PR at once |
 | `sdk-slack-notify.yml` | Send a Slack notification when a release/publish workflow fails (requires `SLACK_SDK_ALERTS` repo secret) |
 | `sdk-slack-community-notify.yml` | Notify Slack about community issues/PRs and dependency-bot PRs. With `slack-bot-token` + `slack-channel-id` it posts via `chat.postMessage`, records the message reference on the PR, and adds a `:white_check_mark:` reaction when that PR is merged; falls back to the incoming webhook (no reaction) when no bot token is set. Callers must grant `issues: write` and `pull-requests: write` |
+| `sdk-issue-labels.yml` | Label issues from the issue form and from `Type:` / `Found-by:` / `Affects:` / `Severity:` lines, so issues opened by people and by agents over the API are labelled alike. Rules in `scripts/issue-triage.mjs`; flags incomplete bugs with `needs-triage` and one comment. Callers must grant `issues: write` |
 
 #### Composite actions
 

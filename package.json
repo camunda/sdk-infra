@@ -12,7 +12,8 @@
     "scripts/",
     "schema/",
     "docker/",
-    "policies/"
+    "policies/",
+    "templates/"
   ],
   "publishConfig": {
     "access": "public",

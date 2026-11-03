@@ -101,6 +101,35 @@ Code blocks in `README.md` are **injected from compilable example files** — do
 
 When an ergonomic helper method exists for a generated operation, the `operation-map.json` entry **must** point to the helper — not to the raw generated method. Users should see the best developer experience by default.
 
+## Opening issues
+
+Issues feed the SDK defect metrics (https://camunda.github.io/sdk-quality-metrics/): where defects are caught, what escapes to users, and how long defects live. In the browser, use the issue forms. Over the API (`gh issue create`, REST, MCP), either set the labels directly or put these lines in the issue body; the `sdk-issue-labels.yml` workflow turns them into labels:
+
+```
+Type: bug | enhancement | documentation | question
+Found-by: review | ci | conformance-test | performance-test | integration | manual-test | audit | user
+Affects: main | stable | both
+Severity: critical | high | medium | low
+Introduced-by: <commit sha | owner/repo@sha | #PR | release tag>
+```
+
+For a bug, `Found-by`, `Affects` and `Severity` are required. Without them the issue gets `needs-triage` and a reminder comment. Bugs from people outside the SDK team default to `found-by/user`; agents and team members must say which layer caught it. `Introduced-by` is optional but valuable: add it when you know the change that caused the bug (`git blame` on the lines your fix changes), in the issue or in the fix PR.
+
+Choosing `Found-by`, the quality layer that caught the bug:
+
+| Value | When |
+|---|---|
+| `review` | Code review (human or agent), including follow-ups from review comments |
+| `ci` | The repo's build, tests, generation-drift check or publish pipeline |
+| `conformance-test` | The cross-SDK conformance test |
+| `performance-test` | The performance matrix or a load test |
+| `integration` | Integrating with a consumer: docs examples, runnable scenarios, other tooling |
+| `manual-test` | Running the SDK by hand against a real cluster |
+| `audit` | A deliberate sweep: security, API surface, runtime, or root-causing a related bug |
+| `user` | A user, a Camunda colleague using the SDK, a support ticket or Slack. Use it even when you file the issue for them |
+
+`Affects`: `main` is the next release (alpha); `stable` is a released `stable/N` line.
+
 ## Pre-push checklist
 
 Before pushing any commits, always run a full build. If the build modifies any files (e.g., generated code drift, README snippet drift), commit those changes before pushing.
