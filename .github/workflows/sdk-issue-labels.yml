@@ -7,6 +7,8 @@
 #   - a bug still missing a detection layer, release line or severity gets needs-triage and one
 #     comment saying what to add; the comment is removed and needs-triage dropped once complete;
 #   - labels already on the issue win, and nothing else is ever removed.
+# Issues created with a workflow's GITHUB_TOKEN raise no `issues` event for other workflows, so
+# this never runs for them; such callers must set the labels directly (see policies/AGENTS.md).
 # These labels feed the SDK defect metrics: https://camunda.github.io/sdk-quality-metrics/
 #
 # Usage (.github/workflows/issue-labels.yml in the SDK repo):

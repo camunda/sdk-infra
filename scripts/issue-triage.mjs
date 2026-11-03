@@ -37,10 +37,11 @@ export function triage({ body, labels, author, team, botPattern, available }) {
     [/review/, 'found-by/review'],
     [/conformance/, 'found-by/conformance-test'],
     [/perf|load/, 'found-by/performance-test'],
+    // Before the generic integration matcher: "CI integration test run" is a CI detection.
+    [/^ci\b|pipeline|build|test suite|unit test|integration test run/, 'found-by/ci'],
     [/integration|example|docs/, 'found-by/integration'],
     [/manual|exploratory|by hand/, 'found-by/manual-test'],
     [/audit|sweep|root.?caus/, 'found-by/audit'],
-    [/^ci\b|pipeline|build|test suite|unit test|integration test run/, 'found-by/ci'],
   ].map(([re, l]) => [re, [l]]);
   const AFFECTS = [[/both/, ['affects/main', 'affects/stable']], [/main|alpha|next|unreleased/, ['affects/main']], [/stable|latest|released/, ['affects/stable']]];
   const SEVERITY = ['critical', 'high', 'medium', 'low'].map((s) => [new RegExp(s), [`severity/${s}`]]);

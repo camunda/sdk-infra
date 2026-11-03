@@ -66,3 +66,12 @@ test("form \"Don't know\" answers fall through to trailer lines", () => {
   assert.deepEqual(r.add.sort(), ['affects/stable', 'found-by/ci', 'severity/high']);
   assert.equal(r.comment, null);
 });
+
+test('CI integration test runs are CI detections, not integration', () => {
+  for (const f of ['integration test run', 'CI integration test run']) {
+    const r = triage({ ...base, body: `Found-by: ${f}\nAffects: main\nSeverity: low`, labels: ['bug'], author: 'jwulf' });
+    assert.ok(r.add.includes('found-by/ci'), f);
+  }
+  const r = triage({ ...base, body: 'Found-by: integration\nAffects: main\nSeverity: low', labels: ['bug'], author: 'jwulf' });
+  assert.ok(r.add.includes('found-by/integration'));
+});

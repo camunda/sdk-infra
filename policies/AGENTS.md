@@ -115,6 +115,8 @@ Introduced-by: <commit sha | owner/repo@sha | #PR | release tag>
 
 For a bug, `Found-by`, `Affects` and `Severity` are required. Without them the issue gets `needs-triage` and a reminder comment. Bugs from people outside the SDK team default to `found-by/user`; agents and team members must say which layer caught it. `Introduced-by` is optional but valuable: add it when you know the change that caused the bug (`git blame` on the lines your fix changes), in the issue or in the fix PR.
 
+Issues created with a workflow's `GITHUB_TOKEN` (for example by an agent step given `github.token`) do not trigger other workflows, so `sdk-issue-labels.yml` never sees them. In that case set the labels directly (`gh issue create --label bug --label found-by/... --label affects/... --label severity/...`) rather than relying on body lines.
+
 Choosing `Found-by`, the quality layer that caught the bug:
 
 | Value | When |
