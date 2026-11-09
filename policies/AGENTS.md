@@ -4,6 +4,11 @@
 > Camunda SDK repositories. Individual SDK repos delegate to this file
 > and extend it with repo-specific instructions.
 
+There are two SDK families:
+
+- `orchestration-cluster-api-<lang>`: the Orchestration Cluster API, versioned with the Camunda server minor.
+- `console-api-<lang>`: the SaaS Console (Administration) API, versioned independently. `console-api-js` is the reference implementation for method names, configuration and transport behaviour.
+
 ## Commit message guidelines
 
 We use Conventional Commits (enforced by commitlint in CI).

@@ -22,6 +22,7 @@ Downstream consumers — changes here affect all of them, so test thoroughly:
 - [`orchestration-cluster-api-go`](https://github.com/camunda/orchestration-cluster-api-go) — Go SDK
 - [`orchestration-cluster-api-rust`](https://github.com/camunda/orchestration-cluster-api-rust) — Rust SDK
 - [`orchestration-cluster-api-java`](https://github.com/camunda/orchestration-cluster-api-java) — Java SDK
+- [`console-api-js`](https://github.com/camunda/console-api-js) — SaaS Console API client (TypeScript); configs, commitlint, issue labels, breaking-change guard, Slack notify
 - [`c8ctl`](https://github.com/camunda/c8ctl) — CLI (transitive, via JS SDK)
 
 > [!NOTE]
