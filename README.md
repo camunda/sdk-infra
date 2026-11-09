@@ -24,9 +24,12 @@ Shared infrastructure for Camunda SDK repositories. This repo provides reusable 
   API spec published at `console.cloud.camunda.io`. Versioned independently of Camunda releases.
   [`console-api-js`](https://github.com/camunda/console-api-js) is the reference implementation.
 
-The spec-bundling, spec-ref guard and operation-coverage workflows (sections 1, 5 and 6 below,
-`sdk-spec-ref-guard.yml`, `sdk-detect-new-ops.yml`) are built around the Orchestration Cluster
-spec and repo list, so they do not apply to the Console API clients. Everything else does.
+These parts are built around the Orchestration Cluster and do not apply to the Console
+API clients: spec bundling, the spec-ref guard, operation coverage and the agent workflows
+(sections 1, 5 and 6 below, `sdk-spec-ref-guard.yml`, `sdk-detect-new-ops.yml`), and the
+integration-test stack (section 3, `docker/`), which runs an Orchestration Cluster, not the SaaS
+Console. The Console API clients reuse the README snippet sync, commitlint, issue labelling, the
+shared configs, `sdk-breaking-change-guard.yml` and `sdk-slack-notify.yml`.
 
 The shared release config gives `main` an alpha prerelease role and needs a `stable/N` branch
 named by `CAMUNDA_SDK_CURRENT_STABLE_MAJOR` as the release branch. Until both exist,
