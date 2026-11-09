@@ -1,0 +1,25 @@
+version: 2
+updates:
+  # Workflows and composite actions are pinned by commit SHA (see tests/action-pinning.test.mjs),
+  # so they only move when this opens a pull request.
+  - package-ecosystem: github-actions
+    directories:
+      - "/"
+      - "/actions/*"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "build"
+    groups:
+      npm:
+        patterns: ["*"]
