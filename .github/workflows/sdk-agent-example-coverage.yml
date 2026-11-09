@@ -132,7 +132,7 @@ jobs:
       BASE: ${{ github.event.repository.default_branch }}
     steps:
       - name: Check out the SDK repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           # Read-only token and no persisted credentials while the agent runs
           # with --yolo; the app token is introduced only at push time.
@@ -145,7 +145,7 @@ jobs:
       # `sdk-infra-ref`. A literal ref in `uses:` cannot be parameterised, which
       # would mean a branch build of this workflow silently ran the v1 helpers.
       - name: Check out shared sdk-infra helpers
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: camunda/sdk-infra
           ref: ${{ inputs.sdk-infra-ref }}
@@ -168,7 +168,7 @@ jobs:
 
       - name: Install Copilot CLI
         env:
-          COPILOT_CLI_VERSION: ${{ vars.COPILOT_CLI_VERSION || 'latest' }}
+          COPILOT_CLI_VERSION: ${{ vars.COPILOT_CLI_VERSION || '1.0.108' }}
         run: npm install -g "@github/copilot@${COPILOT_CLI_VERSION}"
 
       # Minted after the dependency installs above, so a compromised package
