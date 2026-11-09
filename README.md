@@ -15,6 +15,23 @@ Shared infrastructure for Camunda SDK repositories. This repo provides reusable 
 | `policies/` | Canonical contributor guidelines (AGENTS.md) |
 | `templates/` | Canonical issue forms for SDK repos |
 
+## SDK repo families
+
+- **Orchestration Cluster API SDKs**, `orchestration-cluster-api-<lang>`: generated from the
+  OpenAPI spec in `camunda/camunda`. The SDK major tracks the Camunda server minor (8.10 → 10.x),
+  with `stable/N` lines.
+- **Console API clients**, `console-api-<lang>`: generated from the SaaS Console (Administration)
+  API spec published at `console.cloud.camunda.io`. Versioned independently of Camunda releases.
+  [`console-api-js`](https://github.com/camunda/console-api-js) is the reference implementation.
+
+The spec-bundling, spec-ref guard and operation-coverage workflows (sections 1, 5 and 6 below,
+`sdk-spec-ref-guard.yml`, `sdk-detect-new-ops.yml`) are built around the Orchestration Cluster
+spec and repo list, so they do not apply to the Console API clients. Everything else does.
+
+The shared release config gives `main` an alpha prerelease role and needs a `stable/N` branch
+named by `CAMUNDA_SDK_CURRENT_STABLE_MAJOR` as the release branch. Until both exist,
+semantic-release fails on `main` with `ERELEASEBRANCHES`.
+
 ## Quick start for SDK repos
 
 ### 1. Spec bundling (reusable workflow)
