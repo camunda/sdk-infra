@@ -2,11 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // A GitHub App installation usually covers many repositories. Every minted
 // token must say which ones it is for, or it inherits the whole installation.
 
-const WORKFLOWS = join(new URL('..', import.meta.url).pathname, '.github/workflows');
+const WORKFLOWS = join(fileURLToPath(new URL('..', import.meta.url)), '.github/workflows');
 
 test('every create-github-app-token step sets repositories', () => {
   const offenders = [];
@@ -20,7 +21,8 @@ test('every create-github-app-token step sets repositories', () => {
       let end = i + 1;
       while (end < lines.length && !/^\s*-\s+(name|uses|id|run):/.test(lines[end])) end += 1;
       const block = lines.slice(i, end).filter((l) => !/^\s*#/.test(l)).join('\n');
-      const scope = /^\s*repositories:\s*(\S.*)$/m.exec(block);
+      // [ \t] rather than \s: a blank value must not borrow the next input line as its scope.
+      const scope = /^[ \t]*repositories:[ \t]*(\S.*)$/m.exec(block);
       if (!scope) offenders.push(`${name}:${i + 1} has no repositories:`);
       // github.event.repository isn't guaranteed on every trigger (e.g. schedule), and an
       // empty value silently widens the token to the whole installation.
