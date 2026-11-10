@@ -2,12 +2,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // Every third-party `uses:` must name a full commit SHA, never a mutable tag.
 // References to this repo itself (`camunda/sdk-infra/...@v1`) and local paths
 // (`./...`) are intentionally exempt: `v1` is this repo's own release channel.
 
-const ROOT = new URL('..', import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 function* yamlFiles(dir) {
   for (const name of readdirSync(dir)) {
