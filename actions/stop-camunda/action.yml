@@ -71,7 +71,7 @@ runs:
       # run for the whole time it was meant to be diagnosing them. The caller already
       # gates this step with `if: always()`, so uploading unconditionally is the fix.
       if: always() && inputs.upload-logs == 'true'
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
         name: ${{ inputs.artifact-name }}
         path: _logs/compose.log
