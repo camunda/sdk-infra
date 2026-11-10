@@ -64,12 +64,12 @@ runs:
     # Node is installed for every language, not just the JS SDK: the Copilot CLI
     # and several shared scripts are npm-distributed, so Node is a dependency of
     # the workflow itself rather than of any one SDK.
-    - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+    - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
       with:
         node-version: ${{ inputs.node-version }}
 
     - if: inputs.language == 'python'
-      uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+      uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
 
     # Not only for the python SDK: the go and rust Makefiles run
     # `python3 scripts/…` for their coverage and README-snippet checks, the
@@ -78,17 +78,17 @@ runs:
     # Pinning the version beats relying on whatever the runner image happens to
     # preinstall.
     - if: contains(fromJSON('["python","go","rust","java"]'), inputs.language)
-      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
       with:
         python-version: ${{ inputs.python-version }}
 
     - if: inputs.language == 'csharp'
-      uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+      uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
       with:
         dotnet-version: ${{ inputs.dotnet-version }}
 
     - if: inputs.language == 'go'
-      uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+      uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
       with:
         go-version-file: go.mod
 
@@ -104,7 +104,7 @@ runs:
     # four modules and openapi-generator pulls a large dependency tree, so an
     # uncached run pays for it on every job.
     - if: inputs.language == 'java'
-      uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+      uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
       with:
         distribution: ${{ inputs.java-distribution }}
         java-version: ${{ inputs.java-version }}

@@ -61,7 +61,7 @@ jobs:
       # Loaded from a checkout rather than inlined so the rules have one tested implementation,
       # and from `sdk-infra-ref` so a branch build of this workflow runs the branch's rules.
       - name: Check out the triage rules
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           repository: camunda/sdk-infra
           ref: ${{ inputs.sdk-infra-ref }}
@@ -71,7 +71,7 @@ jobs:
           persist-credentials: false
 
       - name: Label the issue
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           TEAM: ${{ inputs.team }}
           BOT_PATTERN: ${{ inputs.bot-pattern }}
