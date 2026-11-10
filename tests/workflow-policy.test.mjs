@@ -31,7 +31,11 @@ test('pull_request_target is confined to the Slack notifier, which never checks 
 
 test('/agent fix is limited to repository collaborators', () => {
   const text = code(read('sdk-agent-pr-followup.yml'));
-  assert.match(text, /"\/agent fix"\*\)/, 'command must be matched at the start of the comment');
+  assert.match(
+    text,
+    /case "\$first_line" in\n\s*"\/agent fix"\*\) ;;\n\s*\*\)[^\n]*\bexit 0 ;;\n\s*esac/,
+    'only a comment whose first line starts with /agent fix may continue',
+  );
   const gate = /case "\$COMMENT_ASSOC" in\s*OWNER\|MEMBER\|COLLABORATOR\) ;;\s*\*\)/;
   assert.match(text, gate, 'author_association must be limited to OWNER|MEMBER|COLLABORATOR');
   // The default arm must stop the run before the PR is selected; matching the arm alone
@@ -74,7 +78,11 @@ test('auto-merge only queues bot-authored, non-draft, non-held PRs', () => {
     'a PR whose author is not a bot must be rejected',
   );
   assert.match(text, /select\(\.isDraft == false\)/, 'drafts must be excluded');
-  assert.match(text, /\.name == \$l/, 'the hold label must be honoured');
+  assert.match(
+    text,
+    /if jq -e --arg l "\$HOLD_LABEL" 'any\(\.labels\[\]; \.name == \$l\)' \/tmp\/pr\.json >\/dev\/null; then\n(?:(?!\n\s*fi\b)[\s\S])*?\n\s*return\n/,
+    'a PR carrying the hold label must be rejected',
+  );
   assert.match(text, /startswith\(env\.AGENT_BRANCH_PREFIX\)/, 'only agent branches are eligible');
   assert.match(text, /--disable-auto/, 'auto-merge must be withdrawn when a PR stops qualifying');
 });
@@ -109,10 +117,17 @@ test('user-controlled event text is only ever bound to an env var', () => {
   const offenders = [];
   let seen = 0;
   for (const name of all) {
-    code(read(name)).split('\n').forEach((line, i) => {
+    const lines = code(read(name)).split('\n');
+    const indent = (l) => /^ */.exec(l)[0].length;
+    lines.forEach((line, i) => {
       if (!UNTRUSTED.test(line)) return;
       seen += 1;
-      if (!ENV_BINDING.test(line)) offenders.push(`${name}: ${line.trim()}`);
+      // The parent is the nearest less-indented line. Inside `run: |` that is the `run:` key
+      // or a script line, so an env-shaped line in a script or heredoc is still rejected.
+      let p = i - 1;
+      while (p >= 0 && (lines[p].trim() === '' || indent(lines[p]) >= indent(line))) p -= 1;
+      const inEnv = p >= 0 && /^\s*env:\s*$/.test(lines[p]);
+      if (!inEnv || !ENV_BINDING.test(line)) offenders.push(`${name}: ${line.trim()}`);
     });
   }
   assert.ok(seen > 0, 'expected at least one env binding of event text');
