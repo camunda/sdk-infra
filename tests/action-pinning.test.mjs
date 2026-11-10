@@ -58,9 +58,14 @@ test('packages run with npx name an exact version', () => {
   assert.deepEqual(offenders, [], `npx packages without an exact version:\n${offenders.join('\n')}`);
 });
 
-test('the Copilot CLI default version is pinned', () => {
+test('the Copilot CLI default version is an exact version', () => {
   for (const file of ['sdk-agent-pr-followup.yml', 'sdk-agent-example-coverage.yml']) {
     const text = readFileSync(join(ROOT, '.github/workflows', file), 'utf8');
-    assert.doesNotMatch(text, /COPILOT_CLI_VERSION \|\| 'latest'/, `${file} defaults the Copilot CLI to latest`);
+    // A range (`1.x`, `^1.0.108`) moves just like `latest`.
+    assert.match(
+      text,
+      /COPILOT_CLI_VERSION: \$\{\{ vars\.COPILOT_CLI_VERSION \|\| '\d+\.\d+\.\d+' \}\}/,
+      `${file} must default the Copilot CLI to an exact x.y.z version`,
+    );
   }
 });
