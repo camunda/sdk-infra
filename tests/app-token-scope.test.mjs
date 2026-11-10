@@ -20,9 +20,13 @@ test('every create-github-app-token step sets repositories', () => {
       let end = i + 1;
       while (end < lines.length && !/^\s*-\s+(name|uses|id|run):/.test(lines[end])) end += 1;
       const block = lines.slice(i, end).filter((l) => !/^\s*#/.test(l)).join('\n');
-      if (!/^\s*repositories:\s*\S+/m.test(block)) offenders.push(`${name}:${i + 1}`);
+      const scope = /^\s*repositories:\s*(\S.*)$/m.exec(block);
+      if (!scope) offenders.push(`${name}:${i + 1} has no repositories:`);
+      // github.event.repository isn't guaranteed on every trigger (e.g. schedule), and an
+      // empty value silently widens the token to the whole installation.
+      else if (/github\.event\./.test(scope[1])) offenders.push(`${name}:${i + 1} scopes repositories from github.event`);
     });
   }
   assert.ok(seen > 0, 'expected to find create-github-app-token steps');
-  assert.deepEqual(offenders, [], `tokens without repositories:\n${offenders.join('\n')}`);
+  assert.deepEqual(offenders, [], `tokens without a reliable repositories scope:\n${offenders.join('\n')}`);
 });
