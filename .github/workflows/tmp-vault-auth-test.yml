@@ -1,0 +1,31 @@
+name: "TEMP: Vault auth test (revert before merge)"
+on:
+  push:
+    branches: [fix/vault-jwt-dual-mode]
+jobs:
+  jwt:
+    permissions:
+      issues: write
+      pull-requests: write
+      id-token: write
+    uses: ./.github/workflows/sdk-slack-community-notify.yml
+    with:
+      repo-name: sdk-infra
+      author-association: MEMBER
+    secrets:
+      vault-addr: ${{ secrets.VAULT_ADDR }}
+      vault-jwt-role: ${{ secrets.VAULT_JWT_ROLE }}
+      vault-jwt-path: ${{ secrets.VAULT_JWT_PATH }}
+      vault-jwt-audience: ${{ secrets.VAULT_JWT_AUDIENCE }}
+  approle-fallback:
+    permissions:
+      issues: write
+      pull-requests: write
+    uses: ./.github/workflows/sdk-slack-community-notify.yml
+    with:
+      repo-name: sdk-infra
+      author-association: MEMBER
+    secrets:
+      vault-addr: ${{ secrets.VAULT_ADDR }}
+      vault-role-id: ${{ secrets.VAULT_ROLE_ID }}
+      vault-secret-id: ${{ secrets.VAULT_SECRET_ID }}
