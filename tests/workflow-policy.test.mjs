@@ -44,10 +44,15 @@ test('/agent fix is limited to repository collaborators', () => {
   assert.match(text, rejects, 'non-collaborators must exit before the pull request is selected');
 });
 
-test('the follow-up agent ignores its own comments', () => {
+test('the follow-up agent ignores its own comments and reviews', () => {
   const text = code(read('sdk-agent-pr-followup.yml'));
-  assert.match(text, /is_self "\$COMMENT_AUTHOR" && \{/);
   assert.match(text, /github-actions\\\[bot\\\]\|camunda-sdk-automation\\\[bot\\\]\) return 0/);
+  assert.match(text, /is_self "\$COMMENT_AUTHOR" && \{[^}\n]*\bexit 0; \}/, 'an own comment must end the run');
+  assert.match(
+    text,
+    /if is_self "\$\{found#\* \}"; then\n(?:(?!\n\s*fi\b)[\s\S])*?\n\s*continue\n\s*fi\b/,
+    'an own review must skip the pull request',
+  );
 });
 
 test('agent candidate selection excludes fork heads', () => {
@@ -90,10 +95,17 @@ test('auto-merge only queues bot-authored, non-draft, non-held PRs', () => {
 test('jobs that run the Copilot CLI declare explicit permissions', () => {
   for (const name of ['sdk-agent-pr-followup.yml', 'sdk-agent-example-coverage.yml']) {
     const text = code(read(name));
-    const jobs = text.split(/\n  (?=[a-z][a-z0-9-]*:\n)/).filter((j) => /copilot --yolo|copilot -p|@github\/copilot/.test(j));
+    const jobsAt = text.indexOf('\njobs:\n');
+    assert.ok(jobsAt >= 0, `${name}: expected a jobs: section`);
+    // Job IDs may contain `_` and start with a letter or `_`; anything narrower lets one job's
+    // block swallow the next, so its permissions could satisfy the check for both.
+    const jobs = text
+      .slice(jobsAt)
+      .split(/\n  (?=[A-Za-z_][A-Za-z0-9_-]*:[ \t]*\n)/)
+      .filter((j) => /copilot --yolo|copilot -p|@github\/copilot/.test(j));
     assert.ok(jobs.length > 0, `${name}: expected a job that runs the Copilot CLI`);
     for (const job of jobs) {
-      assert.match(job, /\n    permissions:\n/, `${name}: a Copilot job has no explicit permissions`);
+      assert.match(job, /\n    permissions:/, `${name}: a Copilot job has no explicit permissions`);
     }
   }
 });
@@ -112,22 +124,38 @@ test('comment and review text reaches the agent through a file, not an expansion
 test('user-controlled event text is only ever bound to an env var', () => {
   // `${{ }}` is substituted into the script before bash parses it, so a title or body
   // expanded inside `run:` (or a prompt) is code injection. An env var is passed as data.
-  const UNTRUSTED = /\$\{\{\s*github\.event\.(comment|review|issue|pull_request|discussion)\.(body|title)\s*\}\}/;
-  const ENV_BINDING = /^\s+[A-Z][A-Z0-9_]*:\s*\$\{\{\s*github\.event\.[a-z_]+\.(body|title)\s*\}\}\s*$/;
+  // Any expression that reads the field counts, not just a bare one: `|| ''` or toJSON()
+  // still substitute the text into the script.
+  const UNTRUSTED =
+    /\$\{\{(?:(?!\}\}).)*github\.event\.(comment|review|issue|pull_request|discussion)\.(body|title)\b(?:(?!\}\}).)*\}\}/;
+  const ENV_BINDING = /^\s+[A-Za-z_][A-Za-z0-9_]*:\s*\$\{\{(?:(?!\}\}).)*\}\}\s*$/;
+  const indent = (l) => /^ */.exec(l)[0].length;
+  // Lines inside a `key: |` / `key: >` block scalar are text (a script, a heredoc), however
+  // YAML-like they look.
+  const blockScalarLines = (lines) => {
+    const inside = new Set();
+    for (let i = 0; i < lines.length; i += 1) {
+      const m = /^(\s*(?:-\s+)?)[^\s#][^:]*:\s*[|>][-+0-9]*\s*(?:#.*)?$/.exec(lines[i]);
+      if (!m) continue;
+      let j = i + 1;
+      while (j < lines.length && (lines[j].trim() === '' || indent(lines[j]) > m[1].length)) inside.add(j++);
+      i = j - 1;
+    }
+    return inside;
+  };
   const offenders = [];
   let seen = 0;
   for (const name of all) {
-    const lines = code(read(name)).split('\n');
-    const indent = (l) => /^ */.exec(l)[0].length;
+    const lines = read(name).split('\n');
+    const scalar = blockScalarLines(lines);
+    const isYamlComment = (k) => !scalar.has(k) && /^\s*#/.test(lines[k]);
     lines.forEach((line, i) => {
-      if (!UNTRUSTED.test(line)) return;
+      if (!UNTRUSTED.test(line) || isYamlComment(i)) return;
       seen += 1;
-      // The parent is the nearest less-indented line. Inside `run: |` that is the `run:` key
-      // or a script line, so an env-shaped line in a script or heredoc is still rejected.
       let p = i - 1;
-      while (p >= 0 && (lines[p].trim() === '' || indent(lines[p]) >= indent(line))) p -= 1;
-      const inEnv = p >= 0 && /^\s*env:\s*$/.test(lines[p]);
-      if (!inEnv || !ENV_BINDING.test(line)) offenders.push(`${name}: ${line.trim()}`);
+      while (p >= 0 && (lines[p].trim() === '' || isYamlComment(p) || indent(lines[p]) >= indent(line))) p -= 1;
+      const inEnv = !scalar.has(i) && p >= 0 && /^\s*env:\s*$/.test(lines[p]);
+      if (!inEnv || !ENV_BINDING.test(line)) offenders.push(`${name}:${i + 1}: ${line.trim()}`);
     });
   }
   assert.ok(seen > 0, 'expected at least one env binding of event text');
