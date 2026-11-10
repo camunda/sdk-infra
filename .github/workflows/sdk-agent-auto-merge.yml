@@ -197,6 +197,9 @@ jobs:
           app-id: ${{ steps.secrets.outputs.APP_ID }}
           private-key: ${{ steps.secrets.outputs.APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
+          # Every command below runs against $GH_REPO, so the token never needs to
+          # reach another repository the App is installed on.
+          repositories: ${{ github.repository }}
 
       - name: Queue or withdraw each pull request
         if: steps.select.outputs.any == 'true'

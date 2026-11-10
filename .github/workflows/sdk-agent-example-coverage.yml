@@ -195,7 +195,7 @@ jobs:
           private-key: ${{ steps.secrets.outputs.APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           # The token only ever pushes to the repo being worked on.
-          repositories: ${{ github.event.repository.name }}
+          repositories: ${{ github.repository }}
 
       - name: Configure committer identity
         env:
