@@ -2,13 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // The agent and auto-merge workflows decide, in embedded bash, who may start a
 // privileged run and what may be merged unattended. Nothing else exercises those
 // decisions, so these tests pin the invariants that must never be dropped. They
 // read the workflow text on purpose: the gates are the text.
 
-const WORKFLOWS = join(new URL('..', import.meta.url).pathname, '.github/workflows');
+const WORKFLOWS = join(fileURLToPath(new URL('..', import.meta.url)), '.github/workflows');
 const read = (name) => readFileSync(join(WORKFLOWS, name), 'utf8');
 const all = readdirSync(WORKFLOWS).filter((n) => /\.ya?ml$/.test(n));
 const code = (text) => text.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n');
@@ -33,6 +34,10 @@ test('/agent fix is limited to repository collaborators', () => {
   assert.match(text, /"\/agent fix"\*\)/, 'command must be matched at the start of the comment');
   const gate = /case "\$COMMENT_ASSOC" in\s*OWNER\|MEMBER\|COLLABORATOR\) ;;\s*\*\)/;
   assert.match(text, gate, 'author_association must be limited to OWNER|MEMBER|COLLABORATOR');
+  // The default arm must stop the run before the PR is selected; matching the arm alone
+  // would still pass if its `exit 0` were dropped and non-collaborators fell through.
+  const rejects = /\*\)(?:(?!;;)[\s\S])*?\n\s*exit 0\s*\n\s*;;\s*\n\s*esac\s*\n\s*pr="\$ISSUE_PR_NUMBER"/;
+  assert.match(text, rejects, 'non-collaborators must exit before the pull request is selected');
 });
 
 test('the follow-up agent ignores its own comments', () => {
@@ -42,18 +47,32 @@ test('the follow-up agent ignores its own comments', () => {
 });
 
 test('agent candidate selection excludes fork heads', () => {
+  // Every selection path lists PRs separately, so each `gh pr list` needs its own filter.
+  const OWNER_FILTER = /headRepositoryOwner\.login == (env\.GITHUB_REPOSITORY_OWNER|\\"\$\{GITHUB_REPOSITORY_OWNER\}\\")/;
   for (const name of ['sdk-agent-pr-followup.yml', 'sdk-agent-auto-merge.yml']) {
-    assert.match(
-      code(read(name)),
-      /headRepositoryOwner\.login == (env\.GITHUB_REPOSITORY_OWNER|\\"\$\{GITHUB_REPOSITORY_OWNER\}\\")/,
-      `${name} must only consider PRs whose head repo belongs to the repository owner`,
-    );
+    const lines = code(read(name)).split('\n');
+    const calls = lines.flatMap((l, i) => (/gh pr list\b/.test(l) ? [i] : []));
+    assert.ok(calls.length > 0, `${name}: expected a gh pr list selection`);
+    for (const [n, i] of calls.entries()) {
+      // The --jq filter spans several quoted lines; look a few lines on, but never into the next call.
+      const end = Math.min(i + 10, calls[n + 1] ?? lines.length);
+      assert.match(
+        lines.slice(i, end).join('\n'),
+        OWNER_FILTER,
+        `${name}:${i + 1}: this selection must only consider PRs whose head repo belongs to the repository owner`,
+      );
+    }
   }
 });
 
 test('auto-merge only queues bot-authored, non-draft, non-held PRs', () => {
   const text = code(read('sdk-agent-auto-merge.yml'));
-  assert.match(text, /\.author\.is_bot == true/, 'author must be a bot account');
+  // The negation is the gate: without `!` bots would be rejected and humans let through.
+  assert.match(
+    text,
+    /if ! jq -e '\.author\.is_bot == true' \/tmp\/pr\.json >\/dev\/null; then\n(?:(?!\n\s*fi\b)[\s\S])*?\n\s*return\n/,
+    'a PR whose author is not a bot must be rejected',
+  );
   assert.match(text, /select\(\.isDraft == false\)/, 'drafts must be excluded');
   assert.match(text, /\.name == \$l/, 'the hold label must be honoured');
   assert.match(text, /startswith\(env\.AGENT_BRANCH_PREFIX\)/, 'only agent branches are eligible');
@@ -74,6 +93,12 @@ test('jobs that run the Copilot CLI declare explicit permissions', () => {
 test('comment and review text reaches the agent through a file, not an expansion in the prompt', () => {
   const text = code(read('sdk-agent-pr-followup.yml'));
   assert.match(text, /printf '%s\\n' "\$COMMENT_BODY" > \/tmp\/feedback\.md/);
+  const step = /\n\s+- name: Run Copilot CLI\n([\s\S]*?)(?=\n\s+- name: )/.exec(text);
+  assert.ok(step, 'expected a "Run Copilot CLI" step');
+  const agent = step[1];
+  assert.match(agent, /\{\n[\s\S]*sed 's\/\^\/  \/' \/tmp\/feedback\.md\n[\s\S]*\} > \/tmp\/prompt\.md/, 'the prompt must include the feedback file');
+  assert.match(agent, /copilot --yolo -p "\$\(cat \/tmp\/prompt\.md\)"/, 'the agent must be given the assembled prompt');
+  assert.doesNotMatch(agent, /\$\{?(COMMENT_BODY|REVIEW_BODY)\b|\$\{\{\s*github\.event\./, 'the agent step must not read feedback text directly');
 });
 
 test('user-controlled event text is only ever bound to an env var', () => {
