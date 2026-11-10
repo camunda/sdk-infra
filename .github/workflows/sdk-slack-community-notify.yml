@@ -29,6 +29,7 @@
 #
 # Prerequisites:
 #   - Repos must be onboarded to Vault (infra-core)
+#   - The calling job grants `id-token: write` for the Vault JWT login
 #   - The camunda-sdk-automation GitHub App must be installed on the repo
 #     with Organization Members: read permission
 #   - For reactions: a Slack bot token with `chat:write` and `reactions:write`,
@@ -49,6 +50,7 @@
 #       permissions:
 #         issues: write
 #         pull-requests: write
+#         id-token: write
 #       uses: camunda/sdk-infra/.github/workflows/sdk-slack-community-notify.yml@v1
 #       with:
 #         repo-name: orchestration-cluster-api-python
@@ -59,8 +61,9 @@
 #         slack-webhook-url: ${{ secrets.SLACK_SDK_ALERTS }}
 #         slack-bot-token: ${{ secrets.SLACK_SDK_BOT_TOKEN }}
 #         vault-addr: ${{ secrets.VAULT_ADDR }}
-#         vault-role-id: ${{ secrets.VAULT_ROLE_ID }}
-#         vault-secret-id: ${{ secrets.VAULT_SECRET_ID }}
+#         vault-jwt-role: ${{ secrets.VAULT_JWT_ROLE }}
+#         vault-jwt-path: ${{ secrets.VAULT_JWT_PATH }}
+#         vault-jwt-audience: ${{ secrets.VAULT_JWT_AUDIENCE }}
 #
 # The marker comment is written with the Issues Comments API, which is shared
 # between issues and pull requests. Both `issues: write` and
@@ -114,11 +117,20 @@ on:
       vault-addr:
         description: 'Vault server URL'
         required: false
+      vault-jwt-role:
+        description: 'Vault JWT role (VAULT_JWT_ROLE)'
+        required: false
+      vault-jwt-path:
+        description: 'Vault JWT auth mount path (VAULT_JWT_PATH)'
+        required: false
+      vault-jwt-audience:
+        description: 'GitHub OIDC audience for Vault (VAULT_JWT_AUDIENCE)'
+        required: false
       vault-role-id:
-        description: 'Vault AppRole role ID'
+        description: 'Deprecated: Vault AppRole role ID, use the vault-jwt-* secrets'
         required: false
       vault-secret-id:
-        description: 'Vault AppRole secret ID'
+        description: 'Deprecated: Vault AppRole secret ID, use the vault-jwt-* secrets'
         required: false
 
 jobs:
@@ -127,7 +139,7 @@ jobs:
     if: github.event.action != 'closed'
     runs-on: ubuntu-latest
     timeout-minutes: 2
-    permissions: {}
+    # No permissions block: the job inherits the caller's grant, which includes id-token: write for the Vault JWT login.
     outputs:
       category: ${{ steps.classify.outputs.category }}
       title: ${{ steps.classify.outputs.title }}
@@ -136,13 +148,28 @@ jobs:
       event-type: ${{ steps.classify.outputs.event_type }}
       bot-name: ${{ steps.classify.outputs.bot_name }}
     steps:
+      - name: Select Vault auth method
+        id: vault-auth
+        env:
+          VAULT_JWT_ROLE: ${{ secrets.vault-jwt-role }}
+        run: |
+          if [ -n "$VAULT_JWT_ROLE" ] && [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            echo "method=jwt" >> "$GITHUB_OUTPUT"
+          else
+            echo "method=approle" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Vault AppRole is deprecated::Grant 'id-token: write' to the calling job and pass vault-jwt-role, vault-jwt-path and vault-jwt-audience. AppRole support will be removed from this workflow, see https://github.com/camunda/team-infrastructure/issues/1076"
+          fi
+
       - name: Import Vault secrets
         id: secrets
         uses: hashicorp/vault-action@892a26828f195e65540a40b4768ae4571f51ebfc # v4.0.0
         continue-on-error: true
         with:
           url: ${{ secrets.vault-addr }}
-          method: approle
+          method: ${{ steps.vault-auth.outputs.method }}
+          role: ${{ steps.vault-auth.outputs.method == 'jwt' && secrets.vault-jwt-role || '' }}
+          path: ${{ steps.vault-auth.outputs.method == 'jwt' && secrets.vault-jwt-path || '' }}
+          jwtGithubAudience: ${{ steps.vault-auth.outputs.method == 'jwt' && secrets.vault-jwt-audience || '' }}
           roleId: ${{ secrets.vault-role-id }}
           secretId: ${{ secrets.vault-secret-id }}
           secrets: |
