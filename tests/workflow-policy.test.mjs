@@ -74,5 +74,22 @@ test('jobs that run the Copilot CLI declare explicit permissions', () => {
 test('comment and review text reaches the agent through a file, not an expansion in the prompt', () => {
   const text = code(read('sdk-agent-pr-followup.yml'));
   assert.match(text, /printf '%s\\n' "\$COMMENT_BODY" > \/tmp\/feedback\.md/);
-  assert.doesNotMatch(text, /\$\{\{\s*github\.event\.comment\.body\s*\}\}[^\n]*\n[^\n]*copilot/);
+});
+
+test('user-controlled event text is only ever bound to an env var', () => {
+  // `${{ }}` is substituted into the script before bash parses it, so a title or body
+  // expanded inside `run:` (or a prompt) is code injection. An env var is passed as data.
+  const UNTRUSTED = /\$\{\{\s*github\.event\.(comment|review|issue|pull_request|discussion)\.(body|title)\s*\}\}/;
+  const ENV_BINDING = /^\s+[A-Z][A-Z0-9_]*:\s*\$\{\{\s*github\.event\.[a-z_]+\.(body|title)\s*\}\}\s*$/;
+  const offenders = [];
+  let seen = 0;
+  for (const name of all) {
+    code(read(name)).split('\n').forEach((line, i) => {
+      if (!UNTRUSTED.test(line)) return;
+      seen += 1;
+      if (!ENV_BINDING.test(line)) offenders.push(`${name}: ${line.trim()}`);
+    });
+  }
+  assert.ok(seen > 0, 'expected at least one env binding of event text');
+  assert.deepEqual(offenders, [], `event text expanded outside an env binding:\n${offenders.join('\n')}`);
 });
