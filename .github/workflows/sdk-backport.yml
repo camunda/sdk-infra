@@ -1,0 +1,334 @@
+# Reusable workflow: handwritten-only backport of a merged PR onto stable/N.
+#
+# OCA SDKs cannot clone camunda-8-js-sdk's korthout/backport-action as-is: a
+# typical PR mixes handwritten code, generator changes, and regenerated
+# output, and some generators (C# 9 ↔ 10) have diverged. This workflow
+# cherry-picks only the handwritten commits. Generated paths stay on the
+# target line; that line's release CI regenerates from *its* spec.
+#
+# The adopting repo MUST have `.github/backport.yml` (schema:
+# schema/backport.schema.json). A missing file is a failure with a comment,
+# not a silent default — the interesting policy (which paths are generated,
+# which generator must not move between lines) has to be discoverable from
+# the SDK repo itself. See camunda/sdk-infra#81.
+#
+# Usage (.github/workflows/backport.yml in the SDK repo):
+#   on:
+#     pull_request:
+#       types: [closed]
+#     issue_comment:
+#       types: [created]
+#   permissions: {}
+#   jobs:
+#     backport:
+#       permissions:
+#         contents: read
+#         id-token: write
+#         pull-requests: write
+#         issues: write
+#       uses: camunda/sdk-infra/.github/workflows/sdk-backport.yml@v1
+#       secrets:
+#         VAULT_ADDR: ${{ secrets.VAULT_ADDR }}
+#         VAULT_JWT_PATH: ${{ secrets.VAULT_JWT_PATH }}
+#         VAULT_JWT_ROLE: ${{ secrets.VAULT_JWT_ROLE }}
+#         VAULT_JWT_AUDIENCE: ${{ secrets.VAULT_JWT_AUDIENCE }}
+
+name: Backport handwritten commits
+
+on:
+  workflow_call:
+    inputs:
+      config-path:
+        description: 'Path to the per-repo backport policy, relative to the repo root.'
+        required: false
+        default: '.github/backport.yml'
+        type: string
+      label-prefix:
+        description: 'Labels of the form `<prefix> <branch>` request a backport to that branch.'
+        required: false
+        default: 'backport'
+        type: string
+      sdk-infra-ref:
+        description: 'Ref of camunda/sdk-infra to load scripts/plan-backport.mjs from.'
+        required: false
+        default: 'v1'
+        type: string
+      runs-on:
+        required: false
+        default: 'ubuntu-24.04'
+        type: string
+      timeout-minutes:
+        required: false
+        default: 15
+        type: number
+    secrets:
+      # Pushes and opens the backport PR as camunda-sdk-automation, not
+      # github-actions[bot], so the target line's release workflow still
+      # fires. Passed explicitly, matching the other agent workflows.
+      VAULT_ADDR:
+        required: true
+      VAULT_JWT_PATH:
+        required: true
+      VAULT_JWT_ROLE:
+        required: true
+      VAULT_JWT_AUDIENCE:
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+
+concurrency:
+  group: sdk-backport-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  backport:
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    env:
+      GH_REPO: ${{ github.repository }}
+      CONFIG_PATH: ${{ inputs.config-path }}
+      LABEL_PREFIX: ${{ inputs.label-prefix }}
+    steps:
+      - name: Decide whether this event is a backport request
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          MERGED: ${{ github.event.pull_request.merged }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+          COMMENT_AUTHOR_ID: ${{ github.event.comment.user.id }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          IS_PR_COMMENT: ${{ github.event.issue.pull_request && 'true' || 'false' }}
+        run: |
+          set -euo pipefail
+          # The backport-action bot (used by camunda-8-js-sdk). Ignore its
+          # own comments so a `/backport` echo cannot loop.
+          if [ "$EVENT" = "issue_comment" ]; then
+            if [ "$IS_PR_COMMENT" != "true" ]; then
+              echo "Not a pull-request comment."; exit 0
+            fi
+            if [ "$COMMENT_AUTHOR_ID" = "97796249" ]; then
+              echo "Ignoring the backport-action bot."; exit 0
+            fi
+            first_line="$(printf '%s\n' "$COMMENT_BODY" | head -n1)"
+            case "$first_line" in
+              "/backport"*) ;;
+              *) echo "Comment is not a /backport command."; exit 0 ;;
+            esac
+          elif [ "$EVENT" = "pull_request" ]; then
+            if [ "$MERGED" != "true" ]; then
+              echo "Pull request is not merged."; exit 0
+            fi
+          else
+            echo "Unsupported event: $EVENT"; exit 0
+          fi
+          echo "pr=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve target branches
+        id: targets
+        if: steps.gate.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ steps.gate.outputs.pr }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          targets=""
+          if [ "$EVENT" = "issue_comment" ]; then
+            # `/backport` with no args uses the PR's labels; `/backport stable/10`
+            # names the target directly (same convention as korthout/backport-action).
+            rest="$(printf '%s\n' "$COMMENT_BODY" | head -n1 | sed -e 's|^/backport[[:space:]]*||')"
+            if [ -n "$rest" ]; then
+              targets="$rest"
+            fi
+          fi
+          if [ -z "$targets" ]; then
+            labels="$(gh api --paginate "repos/${GH_REPO}/issues/${PR}/labels" --jq '.[].name')"
+            prefix="$LABEL_PREFIX "
+            while IFS= read -r label; do
+              case "$label" in
+                "$prefix"*) targets="$targets ${label#"$prefix"}" ;;
+              esac
+            done <<EOF
+          $labels
+          EOF
+          fi
+          targets="$(printf '%s\n' $targets | awk 'NF && !seen[$0]++')"
+          if [ -z "$targets" ]; then
+            echo "No backport target (label '${LABEL_PREFIX} <branch>' or '/backport <branch>')."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "targets<<EOF" >> "$GITHUB_OUTPUT"
+          printf '%s\n' $targets >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+          echo "run=true" >> "$GITHUB_OUTPUT"
+          echo "Targets: $(printf '%s ' $targets)"
+
+      - name: Import secrets
+        id: secrets
+        if: steps.targets.outputs.run == 'true'
+        uses: hashicorp/vault-action@892a26828f195e65540a40b4768ae4571f51ebfc # v4.0.0
+        with:
+          url: ${{ secrets.VAULT_ADDR }}
+          method: jwt
+          path: ${{ secrets.VAULT_JWT_PATH }}
+          role: ${{ secrets.VAULT_JWT_ROLE }}
+          jwtGithubAudience: ${{ secrets.VAULT_JWT_AUDIENCE }}
+          exportEnv: false
+          secrets: |
+            secret/data/products/agentic-experience/github.com/apps/camunda/camunda-sdk-automation GITHUB_APP_ID | APP_ID ;
+            secret/data/products/agentic-experience/github.com/apps/camunda/camunda-sdk-automation GITHUB_APP_PRIVATE_KEY | APP_PRIVATE_KEY ;
+
+      - name: Generate GitHub App token
+        id: app-token
+        if: steps.targets.outputs.run == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ steps.secrets.outputs.APP_ID }}
+          private-key: ${{ steps.secrets.outputs.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.repository }}
+
+      - name: Check out the SDK repo
+        if: steps.targets.outputs.run == 'true'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          fetch-depth: 0
+
+      - name: Check out plan-backport.mjs
+        if: steps.targets.outputs.run == 'true'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          repository: camunda/sdk-infra
+          ref: ${{ inputs.sdk-infra-ref }}
+          path: .sdk-infra
+          sparse-checkout: scripts/plan-backport.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Plan and open backport PRs
+        if: steps.targets.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR: ${{ steps.gate.outputs.pr }}
+          TARGETS: ${{ steps.targets.outputs.targets }}
+          SOURCE: ${{ github.event.pull_request.base.ref || '' }}
+        run: |
+          set -euo pipefail
+          # A comment event does not carry the PR base; look it up.
+          if [ -z "$SOURCE" ]; then
+            SOURCE="$(gh api "repos/${GH_REPO}/pulls/${PR}" --jq .base.ref)"
+          fi
+          mkdir -p /tmp/backport
+          gh api --paginate "repos/${GH_REPO}/pulls/${PR}/commits" --jq \
+            '[.[] | {sha: .sha, subject: (.commit.message | split("\n")[0])}]' \
+            > /tmp/backport/meta.json
+          : > /tmp/backport/commits.json
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          import { execFileSync } from 'node:child_process';
+          const meta = JSON.parse(readFileSync('/tmp/backport/meta.json', 'utf8'));
+          const commits = meta.map((c) => {
+            const files = execFileSync('gh', [
+              'api', `repos/${process.env.GH_REPO}/commits/${c.sha}`,
+              '--jq', '[.files[].filename]',
+            ], { encoding: 'utf8' });
+            return { sha: c.sha, subject: c.subject, files: JSON.parse(files) };
+          });
+          writeFileSync('/tmp/backport/commits.json', JSON.stringify(commits, null, 2));
+          NODE
+
+          comment() {
+            local body="$1"
+            gh api "repos/${GH_REPO}/issues/${PR}/comments" \
+              -f body="$body" >/dev/null
+          }
+
+          git config user.name "camunda-sdk-automation[bot]"
+          git config user.email "41898282+camunda-sdk-automation[bot]@users.noreply.github.com"
+
+          failed=0
+          while IFS= read -r target; do
+            [ -n "$target" ] || continue
+            echo "Planning backport of #${PR} (${SOURCE}) → ${target}"
+            plan="$(node .sdk-infra/scripts/plan-backport.mjs \
+              --config "$CONFIG_PATH" \
+              --commits /tmp/backport/commits.json \
+              --source "$SOURCE" \
+              --target "$target")"
+            echo "$plan"
+            action="$(printf '%s\n' "$plan" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>console.log(JSON.parse(s).action))')"
+            reason="$(printf '%s\n' "$plan" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>console.log(JSON.parse(s).reason))')"
+            if [ "$action" = "fail" ]; then
+              comment "Backport to \`${target}\` did not start: ${reason}
+
+          The per-repo contract is \`.github/backport.yml\` (see camunda/sdk-infra#81). A mixed handwritten+generated commit must be split before it can be labelled."
+              failed=1
+              continue
+            fi
+            if [ "$action" = "skip" ]; then
+              comment "No handwritten commits to backport to \`${target}\`: ${reason}
+
+          Generated output stays on the target line — that line's release CI regenerates from its own spec."
+              continue
+            fi
+
+            if ! git rev-parse --verify "origin/${target}" >/dev/null 2>&1; then
+              comment "Backport to \`${target}\` did not start: branch \`${target}\` does not exist on the remote."
+              failed=1
+              continue
+            fi
+
+            branch="backport/${target#stable/}/${PR}"
+            branch="$(printf '%s' "$branch" | tr ' /' '--')"
+            git fetch origin "$target"
+            git checkout -B "$branch" "origin/${target}"
+            shas="$(printf '%s\n' "$plan" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>console.log((JSON.parse(s).shas||[]).join(" ")))')"
+            conflicts=0
+            # Cherry-pick in the original order (oldest first). `gh api` returns
+            # commits oldest-first; plan-backport preserves that order.
+            for sha in $shas; do
+              if ! git cherry-pick -x "$sha"; then
+                conflicts=1
+                git add -A
+                git -c core.editor=true cherry-pick --continue || git commit --allow-empty -m "WIP: conflicts cherry-picking ${sha}"
+              fi
+            done
+            git push -u origin "$branch" --force-with-lease
+
+            existing="$(gh pr list --repo "$GH_REPO" --head "$branch" --base "$target" --json number --jq '.[0].number // empty')"
+            title="chore: backport #${PR} to ${target} (handwritten only)"
+            body="# Description
+          Handwritten-only backport of #${PR} to \`${target}\`.
+
+          Generated paths were filtered by \`.github/backport.yml\`. After merge, \`${target}\`'s release CI regenerates from that line's spec — do not commit generated output here.
+
+          ${reason}
+          "
+            if [ -n "$existing" ]; then
+              gh pr edit "$existing" --repo "$GH_REPO" --title "$title" --body "$body"
+              number="$existing"
+            else
+              draft_flag=""
+              [ "$conflicts" = "1" ] && draft_flag="--draft"
+              number="$(gh pr create --repo "$GH_REPO" --base "$target" --head "$branch" \
+                --title "$title" --body "$body" $draft_flag --json number --jq .number)"
+            fi
+            if [ "$conflicts" = "1" ]; then
+              comment "Opened draft backport PR #${number} to \`${target}\` with conflict markers in handwritten files. Resolve them on that branch before marking it ready. Generated files were not cherry-picked."
+            else
+              comment "Opened backport PR #${number} to \`${target}\` (handwritten commits only)."
+            fi
+          done <<EOF
+          $TARGETS
+          EOF
+
+          [ "$failed" = "0" ]

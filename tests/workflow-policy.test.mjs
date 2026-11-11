@@ -161,3 +161,18 @@ test('user-controlled event text is only ever bound to an env var', () => {
   assert.ok(seen > 0, 'expected at least one env binding of event text');
   assert.deepEqual(offenders, [], `event text expanded outside an env binding:\n${offenders.join('\n')}`);
 });
+
+test('sdk-backport never checks out pull_request_target and requires a per-repo config', () => {
+  const text = code(read('sdk-backport.yml'));
+  assert.doesNotMatch(text, /pull_request_target/, 'backport must not use pull_request_target');
+  assert.match(text, /plan-backport\.mjs/, 'the classifier lives in scripts/plan-backport.mjs');
+  assert.match(text, /\.github\/backport\.yml/, 'the per-repo contract is .github/backport.yml');
+  assert.match(
+    text,
+    /camunda-sdk-automation/,
+    'pushes as the App so the target line still runs release CI',
+  );
+  // A mixed handwritten+generated commit is a hard failure, not a silent drop.
+  assert.match(text, /mixed handwritten\+generated/);
+});
+

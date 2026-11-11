@@ -230,6 +230,46 @@ https://raw.githubusercontent.com/camunda/sdk-infra/refs/heads/main/policies/AGE
 ... (keep your existing repo-specific section)
 ```
 
+## Phase 5: Handwritten-only backport
+
+OCA SDKs: add a thin caller and a **required** `.github/backport.yml`. The file is the contract — without it the workflow refuses to guess generated-code paths (camunda/sdk-infra#81).
+
+```yaml
+# .github/workflows/backport.yml
+on:
+  pull_request:
+    types: [closed]
+  issue_comment:
+    types: [created]
+permissions: {}
+jobs:
+  backport:
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+      issues: write
+    uses: camunda/sdk-infra/.github/workflows/sdk-backport.yml@v1
+    secrets:
+      VAULT_ADDR: ${{ secrets.VAULT_ADDR }}
+      VAULT_JWT_PATH: ${{ secrets.VAULT_JWT_PATH }}
+      VAULT_JWT_ROLE: ${{ secrets.VAULT_JWT_ROLE }}
+      VAULT_JWT_AUDIENCE: ${{ secrets.VAULT_JWT_AUDIENCE }}
+```
+
+```yaml
+# .github/backport.yml
+skip-paths:
+  - src/gen/**
+  - external-spec/**
+  - spec-snapshots/**
+skip-subjects:
+  - 'chore(gen):'
+  - 'chore(regen):'
+```
+
+C# should also set `do-not-backport` for `generator/**` between 9 and 10. Create labels `backport stable/N` for each live line.
+
 ## What to delete from SDK repos after migration
 
 | File | Delete when... |
