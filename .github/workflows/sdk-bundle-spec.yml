@@ -46,7 +46,7 @@ jobs:
 
       - name: Fetch and bundle spec
         run: |
-          npx --yes camunda-schema-bundler@2.4.5 \
+          npx --yes camunda-schema-bundler@2.4.6 \
             --ref "${{ inputs.spec-ref }}" \
             --deref-path-local \
             --output-spec bundled/rest-api.bundle.json \
