@@ -153,7 +153,52 @@ jobs:
     uses: camunda/sdk-infra/.github/workflows/sdk-issue-labels.yml@v1
 ```
 
-### 8. Shared configs
+### 8. Handwritten-only backport (reusable workflow)
+
+OCA SDKs cannot cherry-pick a whole PR onto `stable/N`: generated output belongs to the *target* line's spec, and some generators (C# 9 ↔ 10) have diverged. The shared workflow reads **this repo's** `.github/backport.yml` (required — a missing file is an error, not a silent default) and cherry-picks only the handwritten commits. See [schema/backport.schema.json](schema/backport.schema.json) and camunda/sdk-infra#81.
+
+```yaml
+# .github/workflows/backport.yml
+on:
+  pull_request:
+    types: [closed]
+  issue_comment:
+    types: [created]
+permissions: {}
+jobs:
+  backport:
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+      issues: write
+    uses: camunda/sdk-infra/.github/workflows/sdk-backport.yml@v1
+    secrets:
+      VAULT_ADDR: ${{ secrets.VAULT_ADDR }}
+      VAULT_JWT_PATH: ${{ secrets.VAULT_JWT_PATH }}
+      VAULT_JWT_ROLE: ${{ secrets.VAULT_JWT_ROLE }}
+      VAULT_JWT_AUDIENCE: ${{ secrets.VAULT_JWT_AUDIENCE }}
+```
+
+```yaml
+# .github/backport.yml — required; discoverable from the SDK repo
+skip-paths:
+  - src/gen/**
+  - external-spec/**
+  - spec-snapshots/**
+skip-subjects:
+  - 'chore(gen):'
+  - 'chore(regen):'
+# C# only — generator diverged between 9 and 10:
+# do-not-backport:
+#   - paths: [generator/**]
+#     from: [main, stable/10]
+#     to: [stable/9]
+```
+
+Label a merged PR `backport stable/10` (or comment `/backport stable/10`). Regen-only PRs and mixed handwritten+generated commits are not backported.
+
+### 9. Shared configs
 
 ```js
 // commitlint.config.cjs

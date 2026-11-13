@@ -1,0 +1,48 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SDK handwritten backport policy",
+  "description": "Per-repo contract for camunda/sdk-infra's handwritten-only backport workflow. Lives at .github/backport.yml in each adopting SDK. A missing file is an error — the workflow will not guess paths.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "skip-paths": {
+      "type": "array",
+      "description": "Globs for generated / spec-snapshot paths. A commit whose changed files are all under these is dropped from the cherry-pick. A commit that mixes these with other paths is a hard failure (split the PR).",
+      "items": { "type": "string", "minLength": 1 },
+      "default": ["src/gen/**", "external-spec/**", "spec-snapshots/**"]
+    },
+    "skip-subjects": {
+      "type": "array",
+      "description": "Commit-subject prefixes that mark a regen-only commit. Matched as a case-sensitive prefix of the first line.",
+      "items": { "type": "string", "minLength": 1 },
+      "default": ["chore(gen):", "chore(regen):"]
+    },
+    "do-not-backport": {
+      "type": "array",
+      "description": "Path globs that must never be cherry-picked from one line onto another (e.g. a generator that diverged between stable/9 and stable/10). If any remaining commit touches a matching path and the source/target lines match, the whole PR is skipped.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["paths"],
+        "properties": {
+          "paths": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "from": {
+            "type": "array",
+            "description": "Source branch names this rule applies to. Empty / omitted = any source.",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "to": {
+            "type": "array",
+            "description": "Target branch names this rule applies to. Empty / omitted = any target.",
+            "items": { "type": "string", "minLength": 1 }
+          }
+        }
+      },
+      "default": []
+    }
+  }
+}
