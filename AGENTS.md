@@ -96,6 +96,7 @@ The currently promoted stable major is set via the `CAMUNDA_SDK_CURRENT_STABLE_M
 | `scheduled-detect-new-ops.yml` | Scheduled daily check for SDK coverage gaps with cross-repo issue creation. A thin caller: it bundles the spec, then delegates to `sdk-detect-new-ops.yml` |
 | `sdk-agent-example-coverage.yml` | Resolve a `new-operations` coverage issue by running the Copilot CLI and opening a PR. Callers supply `language`, `issue-number` and `verify-commands` |
 | `sdk-agent-pr-followup.yml` | React to feedback on an agent-authored PR (`/agent fix` comment, failing CI, bot review) by running the Copilot CLI on the same branch. The bot-review path is a `schedule` sweep, not a `pull_request_review` trigger |
+| `sdk-agent-auto-merge.yml` | Queue an agent PR for GitHub auto-merge once review threads are resolved, no changes are requested and the diff stays within `allowed-paths`; withdraw it when it stops qualifying. Optional input `require-human-approval` (default `false`) additionally requires an approval, on the current head commit, from a non-bot reviewer with write/maintain/admin permission. The default is a policy decision tracked in camunda/sdk-infra#85 |
 | `sdk-coverage-gap-dispatch.yml` | On a CI failure whose failing *step* is the example-coverage check, send a `coverage-gap` `repository_dispatch` to `scheduled-detect-new-ops.yml` instead of touching the PR, and comment once to explain the unrelated red check. For the repos that bundle the spec live (js, python, csharp), where upstream movement reddens every open PR at once |
 | `sdk-slack-notify.yml` | Send a Slack notification when a release/publish workflow fails (requires `SLACK_SDK_ALERTS` repo secret) |
 | `sdk-slack-community-notify.yml` | Notify Slack about community issues/PRs and dependency-bot PRs. With `slack-bot-token` + `slack-channel-id` it posts via `chat.postMessage`, records the message reference on the PR, and adds a `:white_check_mark:` reaction when that PR is merged; falls back to the incoming webhook (no reaction) when no bot token is set. Callers must grant `issues: write`, `pull-requests: write` and `id-token: write` (Vault JWT login with the `vault-jwt-*` secrets) |
@@ -171,6 +172,23 @@ Untrusted text (issue bodies, comments, reviews, CI logs) reaches the prompt onl
 markers that carry a per-run nonce, framed as data the agent must not take instructions
 from. That is a mitigation, not a boundary: the job split above is what limits the damage
 if an injection works.
+
+Before the prompt is built, `.github/scripts/flag-injection.sh` scans that text and, on a
+match, a notice listing the matched *categories* (never the text) is added to the trusted
+part of the prompt, above the untrusted block, with a `::warning::` in the log. It is a
+deterministic heuristic that is easy to evade by rephrasing, so it only warns: it never
+fails or skips the run, and it must not run in the credentialed `publish` job. Keep its
+patterns precise, because CI logs legitimately mention tokens, workflows and shell
+commands and a tripwire that always fires gets ignored.
+
+`sdk-agent-auto-merge.yml` is the one place a person can be made a gate. With
+`require-human-approval: true`, `ineligible_reason()` demands an `APPROVED` review on the
+PR's *current head commit* from a `User` (not a `Bot`) whom the collaborator permission
+endpoint reports as `admin` or `write` (maintain reports as `write`). `authorAssociation`
+is deliberately not used: an org member with read-only access carries the same
+association as a maintainer. A later push makes the approval stale, and any failed lookup
+reads as "not approved". The input stays optional and off by default until
+camunda/sdk-infra#85 decides the policy; callers must not be made to pass it.
 
 ### Build & test
 
