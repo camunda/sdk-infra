@@ -132,9 +132,20 @@ implementation behind each SDK repo's `.github/workflows/agent-*.yml`. Those cal
 are deliberately thin — they own only the triggers, the job permissions, the language,
 and the `verify-commands` that define "verified" for that repo.
 
-Four design points are load-bearing and should not be undone casually:
+Five design points are load-bearing and should not be undone casually:
 
-- **Ordering.** The run is `agent → inspect → verify → reconcile → push`. Inspecting the
+- **The agent job holds no credentials worth stealing.** The agent runs `--yolo`, so it
+  runs in a job with only `contents: read`, `copilot-requests: write` and read access.
+  In particular it has no `id-token: write`: GitHub exposes the OIDC request token to
+  every step of a job that has it, so any process could mint a JWT, trade it at Vault for
+  the App key, and push past the rulesets. Its only output is a `git bundle` artifact. A
+  separate `publish` job mints the App token, pushes the bundle as a fast-forward of the
+  agent branch, and comments; it runs nothing from the repo and takes the branch and the
+  review threads to resolve from `triage` or the workflow inputs, never from the agent
+  job. Do not move the push, the Vault step or any write permission back into the agent's
+  job (camunda/sdk-infra#84).
+- **Ordering.** The run is `agent → inspect → verify → reconcile → bundle`, then `push` in
+  `publish`. Inspecting the
   working tree *before* verification is the only moment at which a dirty tree
   unambiguously means the agent left work uncommitted; running verify first conflates
   that with a verify command regenerating a lockfile or a recorded fixture.
@@ -152,7 +163,14 @@ Four design points are load-bearing and should not be undone casually:
   with nothing on the PR to say so (camunda/sdk-infra#42). The sweep asks instead of
   being told: it looks for an agent PR whose current head commit carries a non-approving
   bot review. Head moving is what marks a review addressed, which is the same staleness
-  rule the CI path uses. Do not "simplify" this back to the event trigger.
+  rule the CI path uses. Do not "simplify" this back to the event trigger. Only reviewers
+  on the `bot-reviewers` allow-list (default: the Copilot reviewer) count, because their
+  text reaches the agent with no human in the loop.
+
+Untrusted text (issue bodies, comments, reviews, CI logs) reaches the prompt only between
+markers that carry a per-run nonce, framed as data the agent must not take instructions
+from. That is a mitigation, not a boundary: the job split above is what limits the damage
+if an injection works.
 
 ### Build & test
 
