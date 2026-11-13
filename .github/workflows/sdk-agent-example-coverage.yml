@@ -128,6 +128,7 @@ jobs:
     outputs:
       skip: ${{ steps.setup.outputs.skip }}
       base-sha: ${{ steps.setup.outputs.base-sha }}
+      branch-sha: ${{ steps.setup.outputs.branch-sha }}
       has-commits: ${{ steps.agent.outputs.has-commits }}
       head-sha: ${{ steps.bundle.outputs.head-sha }}
     concurrency:
@@ -218,6 +219,16 @@ jobs:
           # builds on a real commit of the base branch rather than on whatever history
           # the agent chose to bundle.
           echo "base-sha=$(git rev-parse "origin/${BASE}")" >> "$GITHUB_OUTPUT"
+          # The agent branch as it stands now (empty when it does not exist). `publish`
+          # pushes with this as an explicit lease, so a concurrent run for the same
+          # issue that pushes first makes this run's push fail rather than be
+          # overwritten. Through the API: the checkout carries no credentials, which
+          # `git ls-remote` would need on a non-public repo.
+          # A missing ref is a 404 whose JSON body `gh api` still writes to stdout, so
+          # only a full SHA counts; anything else means "absent".
+          branch_sha="$(gh api "repos/${GH_REPO}/git/ref/heads/${branch}" --jq '.object.sha' 2>/dev/null || true)"
+          [[ "$branch_sha" =~ ^[0-9a-f]{40}$ ]] || branch_sha=""
+          echo "branch-sha=${branch_sha}" >> "$GITHUB_OUTPUT"
 
           # The issue is attacker-influenced text on a public repo, so it is
           # written to files rather than to $GITHUB_OUTPUT or an env var that
@@ -534,20 +545,24 @@ jobs:
           GH_REPO: ${{ github.repository }}
           BRANCH: ${{ steps.load.outputs.branch }}
           SHA: ${{ steps.load.outputs.sha }}
+          LEASE: ${{ needs.implement.outputs.branch-sha }}
         run: |
           set -euo pipefail
 
-          git push --force-with-lease \
-            "https://x-access-token:${APP_TOKEN}@github.com/${GH_REPO}.git" \
-            "${SHA}:refs/heads/${BRANCH}"
-
+          # The per-issue concurrency group only covers `implement`, so another run
+          # for this issue may have opened a PR while this one's agent was working.
           existing="$(gh pr list --repo "$GH_REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
           if [ -n "$existing" ]; then
-            echo "::notice::Updated existing PR #${existing}."
-            echo "url=$(gh pr view "$existing" --repo "$GH_REPO" --json url --jq '.url')" >> "$GITHUB_OUTPUT"
-            echo "opened=true" >> "$GITHUB_OUTPUT"
-            exit 0
+            echo "::error::PR #${existing} was opened for ${BRANCH} by another run while this one worked; leaving it alone."
+            exit 1
           fi
+
+          # Explicit lease: the branch must still be exactly what `implement` saw before
+          # the agent ran (absent when LEASE is empty). A concurrent run that pushed in
+          # between makes this push fail instead of being overwritten.
+          git push --force-with-lease="refs/heads/${BRANCH}:${LEASE}" \
+            "https://x-access-token:${APP_TOKEN}@github.com/${GH_REPO}.git" \
+            "${SHA}:refs/heads/${BRANCH}"
 
           # Read here rather than handed over by the agent job, which could have
           # rewritten anything it left on disk.
