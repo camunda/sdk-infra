@@ -314,3 +314,49 @@ test('flag-injection.sh is only ever run before the agent, from the helper check
     assert.doesNotMatch(publish[0], /flag-injection/, `${name}: the publish job must not run the scan`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Opt-in path merges the approved commit directly (review of camunda/sdk-infra#97)
+// ---------------------------------------------------------------------------
+
+// GitHub's auto-merge is persistent: it merges whatever the head is when the required checks
+// go green, and a push by a write-capable account (the App that publishes the agent's
+// follow-up commits) does not disarm it. `expectedHeadOid` on the enable request is checked
+// once, when it is enabled. So with the approval gate on, arming auto-merge would let a
+// commit nobody approved merge, and a pinned `--auto` would not close that window.
+const optInBranch = () => {
+  const text = code(read(AUTO_MERGE));
+  const m = /if \[ -z "\$reason" \]; then\n\s*if \[ "\$REQUIRE_HUMAN_APPROVAL" = "true" \]; then\n([\s\S]*?)\n\s*elif \[ "\$queued" = "true" \]; then\n\s*echo "Already queued/.exec(text);
+  assert.ok(m, 'expected a separate opt-in branch in the queue loop');
+  return m[1];
+};
+
+test('with require-human-approval on, the approved head is merged directly and pinned', () => {
+  const branch = optInBranch();
+  assert.match(branch, /direct_flags="--\$\{MERGE_METHOD\} --match-head-commit \$\{approved_head\}"/, 'the merge must be pinned to the head whose approval was verified');
+  assert.match(branch, /if gh pr merge "\$pr" --repo "\$GH_REPO" \$direct_flags; then/, 'the pinned flags must be the ones used for the merge');
+  assert.doesNotMatch(branch.replace(/--disable-auto/g, ''), /--auto\b/, 'the opt-in path must never arm persistent auto-merge');
+  assert.match(branch, /--disable-auto/, 'auto-merge armed before the gate was switched on must be disarmed');
+  assert.match(branch, /"\$\{?mergeable\}?" != "CLEAN"|mergeStateStatus/, 'the merge must wait until GitHub reports the PR clean');
+});
+
+test('the approved head is the one the approval was checked against, and nothing else', () => {
+  const text = code(read(AUTO_MERGE));
+  // Recorded only once the gate has passed, cleared before every evaluation.
+  assert.match(text, /rm -f \/tmp\/approved-head\.txt/);
+  assert.match(
+    text,
+    /if \[ "\$approved" != "true" \]; then\n(?:(?!\n\s*fi\b)[\s\S])*?\n\s*return\n\s*fi\n\s*jq -r '\.data\.repository\.pullRequest\.headRefOid' \/tmp\/reviews\.json > \/tmp\/approved-head\.txt/,
+    'the head must be written after the approval check passes',
+  );
+  assert.match(text, /--json [^\n]*\bheadRefOid\b[^\n]*\bmergeStateStatus\b|--json [^\n]*\bmergeStateStatus\b[^\n]*\bheadRefOid\b/, 'the head and merge state must be read with the PR');
+  const branch = optInBranch();
+  assert.match(branch, /\[\[ "\$approved_head" =~ \^\[0-9a-f\]\{40\}\$ \]\]/, 'only a full SHA may be passed on');
+  assert.match(branch, /"\$pr_head" != "\$approved_head"/, 'a head that moved while evaluating must not be merged');
+});
+
+test('without require-human-approval the existing auto-merge request is unchanged', () => {
+  const text = code(read(AUTO_MERGE));
+  assert.match(text, /merge_flags="--auto --\$\{MERGE_METHOD\}"/);
+  assert.match(text, /gh pr merge "\$pr" --repo "\$GH_REPO" \$merge_flags/);
+});

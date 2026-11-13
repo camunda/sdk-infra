@@ -132,8 +132,11 @@ threads are resolved, no changes are requested and its diff stays inside `allowe
 Rulesets on these repos require no approvals, so by default a human never has to look at
 what merges. Set `require-human-approval: true` to also require an approval, on the
 pull request's current head commit, from a person with write access (bot approvals,
-the Copilot reviewer included, never count; a later push makes the approval stale). The
-input is optional and defaults to `false`.
+the Copilot reviewer included, never count; a later push makes the approval stale). With
+it on, auto-merge is not armed: the approved commit is merged directly, pinned to that
+commit, once GitHub reports the pull request clean, so a later push cannot ride on the
+approval. A merge can therefore lag by one sweep interval. The input is optional and
+defaults to `false`.
 
 Text that reaches the agent from outside (issue bodies, comments, bot reviews, CI logs)
 is passed between per-run nonce markers as data to be ignored as instructions. A small

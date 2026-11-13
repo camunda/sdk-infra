@@ -190,6 +190,21 @@ association as a maintainer. A later push makes the approval stale, and any fail
 reads as "not approved". The input stays optional and off by default until
 camunda/sdk-infra#85 decides the policy; callers must not be made to pass it.
 
+With the gate on, the workflow **never arms auto-merge**. GitHub's auto-merge is
+persistent: it merges whatever the head is when the required checks go green, and a push
+by a write-capable account (the App that publishes the agent's follow-up commits) does not
+disarm it, so an approval verified for one commit would carry a later, unreviewed one. The
+`expectedHeadOid` on the enable request is checked once, at enable time, so pinning
+`--auto` would not close that window. Instead the approved commit is merged **directly**
+with `--match-head-commit <that sha>`, on the first pass where `mergeStateStatus` is
+`CLEAN` (required checks passed, nothing blocking); GitHub refuses the merge if the head
+has moved. A pass that finds the PR not yet clean does nothing and leaves it to the next
+one, and any auto-merge armed before the gate was switched on is disabled. The cost is
+latency: a merge waits for the next CI-success event or hourly sweep, and a PR whose
+state is `UNSTABLE` (a non-required check failing) or `BEHIND` is not merged. The repo
+still needs required status checks (without them `CLEAN` says nothing about CI), but no
+longer needs `allow_auto_merge` for this path.
+
 ### Build & test
 
 This repo has no build step. It publishes source files directly.
