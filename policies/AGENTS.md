@@ -88,6 +88,46 @@ Either way, an intermittent failure is a real defect that must be diagnosed and 
 
 Before every AI-assisted session, verify CI is green. Warnings are fatal. Do not suppress a warning to make a build pass. Do not treat any failure as pre-existing or unrelated without explicit confirmation from the engineer.
 
+## Secrets must not leak
+
+The SDKs handle OAuth client secrets, bearer tokens, basic-auth credentials and mTLS keys. This section applies to every new or changed hand-written runtime code path that reads, holds, sends or stores a credential (the code not produced by the generator, for example authentication, configuration, transport and the job worker).
+
+Requirements:
+
+- A secret must not appear in logs, including debug and trace logging of HTTP requests and responses (for example the `Authorization` header).
+- A secret must not appear in exception or error messages. A token-endpoint failure must not echo the request or response body.
+- A secret must not appear in the `toString` / `repr` / `Debug` / `ToString()` output of config, credential and client objects.
+- A secret must not appear in telemetry or metrics attributes.
+- A secret must not be written to disk beyond what is required. For the on-disk OAuth token cache, review its location, file permissions (mode `0600`), cleanup and Windows behaviour whenever you change it.
+- Each SDK must have a sentinel-secret regression test. It configures a recognisable sentinel secret, drives the auth success and auth failure paths, and asserts that the sentinel never appears in logs, exceptions or telemetry. Extend it when you add a new place a credential can flow.
+
+## Job variables are untrusted input
+
+Job variables come from the server, but their content is set by whoever started the process instance. SDK job workers must treat them as untrusted input. This section applies to every new or changed hand-written code path that receives, deserializes, passes on or logs job variables.
+
+Requirements:
+
+- Deserialization: variables are deserialized only into JSON-shaped values or into user types the handler author explicitly requested, never into arbitrary classes. Do not use a deserialization mechanism that can instantiate arbitrary types from the payload (for example pickling).
+- Size and depth: each SDK must decide and document whether it enforces size and depth limits on variable payloads, and what the limits are. At a minimum, handling a deeply nested payload must not recurse without bound.
+- Logging: variable contents must not reach logs, exception messages or telemetry.
+- Concurrency: variables must not be shared or mutated across concurrently running jobs.
+- Trust model: each SDK must document, for handler authors, that job variables are untrusted input and what the SDK does and does not do to guard against it (deserialization, limits, validation).
+
+## Negative-case test baseline
+
+The hand-written runtime of every SDK must have tests for its failure paths, not only its success paths. New or changed runtime code must keep the following negative cases covered. A case is covered when a test drives the failure and asserts the resulting behaviour.
+
+At a minimum:
+
+- Token-endpoint errors and expiry boundaries.
+- Retry and backpressure on HTTP 429, 503 and 500.
+- Malformed or invalid configuration.
+- Handler exceptions, and shutdown during in-flight jobs.
+- Cancellation.
+- mTLS misconfiguration.
+
+A count of test files is not a measure of this baseline.
+
 ## README code examples
 
 Code blocks in `README.md` are **injected from compilable example files** — do not edit them inline.
