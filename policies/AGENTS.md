@@ -103,7 +103,7 @@ Requirements:
 
 ## Job variables are untrusted input
 
-Job variables come from the server, but their content is set by whoever started the process instance. SDK job workers must treat them as untrusted input. This section applies to every new or changed hand-written code path that receives, deserializes, passes on or logs job variables.
+Job variables come from the server, but their content is set by whoever started the process instance. SDK job workers must treat them as untrusted input. This section applies to every new or changed hand-written code path that receives, deserializes, passes on or logs job variables. An SDK that has no job worker (for example a Console API client) documents this section as not applicable.
 
 Requirements:
 
@@ -115,7 +115,7 @@ Requirements:
 
 ## Negative-case test baseline
 
-The hand-written runtime of every SDK must have tests for its failure paths, not only its success paths. New or changed runtime code must keep the following negative cases covered. A case is covered when a test drives the failure and asserts the resulting behaviour.
+The hand-written runtime of every SDK must have tests for its failure paths, not only its success paths. New or changed runtime code must keep the following negative cases covered for each facility the SDK implements. A case is covered when a test drives the failure and asserts the resulting behaviour. A case for a facility the SDK does not implement (for example job handlers in a client without job workers) is documented as not applicable.
 
 At a minimum:
 
