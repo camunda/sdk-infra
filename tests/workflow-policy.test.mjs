@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 // The agent and auto-merge workflows decide, in embedded bash, who may start a
@@ -160,4 +161,99 @@ test('user-controlled event text is only ever bound to an env var', () => {
   }
   assert.ok(seen > 0, 'expected at least one env binding of event text');
   assert.deepEqual(offenders, [], `event text expanded outside an env binding:\n${offenders.join('\n')}`);
+});
+
+// ---------------------------------------------------------------------------
+// Human-approval gate in sdk-agent-auto-merge.yml (camunda/sdk-infra#84, option 3)
+// ---------------------------------------------------------------------------
+
+const AUTO_MERGE = 'sdk-agent-auto-merge.yml';
+
+// The jq program that picks the approving reviewers is exercised for real, not just
+// pattern-matched: a typo in it would silently read as "nobody approved" or, worse,
+// "everybody approved".
+const approversFilter = () => {
+  const m = /approvers="\$\(jq -r '([\s\S]*?)' \/tmp\/reviews\.json\)"/.exec(code(read(AUTO_MERGE)));
+  assert.ok(m, 'expected the approvers jq program in sdk-agent-auto-merge.yml');
+  return m[1];
+};
+const HEAD = 'a'.repeat(40);
+const OLD = 'b'.repeat(40);
+const review = (login, state, oid = HEAD, typename = 'User') => ({
+  state,
+  author: login === null ? null : { login, __typename: typename },
+  commit: { oid },
+});
+const approvers = (reviews, headRefOid = HEAD) => {
+  const input = JSON.stringify({ data: { repository: { pullRequest: { headRefOid, reviews: { nodes: reviews } } } } });
+  const out = execFileSync('jq', ['-r', approversFilter()], { input, encoding: 'utf8' });
+  return out.split('\n').filter(Boolean);
+};
+
+test('require-human-approval is an optional boolean that defaults to off', () => {
+  const text = read(AUTO_MERGE);
+  const input = /\n      require-human-approval:\n((?:        .*\n)+)/.exec(text);
+  assert.ok(input, 'expected a require-human-approval workflow_call input');
+  assert.match(input[1], /\n?\s+required: false\n/, 'the input must be optional: callers in other repos must not break');
+  assert.match(input[1], /\n\s+default: false\n/, 'the default is a policy decision (camunda/sdk-infra#85); it must stay off');
+  assert.match(input[1], /\n\s+type: boolean\n/);
+  // allowed-paths is the only input that has ever been required; the new gate must not add another.
+  const required = [...text.matchAll(/\n      ([a-z-]+):\n(?:        [^\n]*\n)*?        required: true\n/g)].map((m) => m[1]);
+  assert.deepEqual(required, ['allowed-paths']);
+  assert.match(code(text), /REQUIRE_HUMAN_APPROVAL: \$\{\{ inputs\.require-human-approval \}\}/);
+});
+
+test('with require-human-approval on, a PR without a current human approval is rejected', () => {
+  const text = code(read(AUTO_MERGE));
+  assert.match(
+    text,
+    /if \[ "\$REQUIRE_HUMAN_APPROVAL" = "true" \]; then\n(?:(?!\n\s*fi\b)[\s\S])*?\n\s*return\n/,
+    'the gate must return a blocking reason when it is on and no qualifying approval was found',
+  );
+  // The gate is off unless the value is exactly "true".
+  assert.doesNotMatch(text, /REQUIRE_HUMAN_APPROVAL" != "false"/);
+});
+
+test('an approval counts only from a human, on the current head commit, with write access', () => {
+  const text = code(read(AUTO_MERGE));
+  assert.match(text, /headRefOid/, 'the head commit must be read so a stale approval can be told apart');
+  assert.match(text, /nodes \{ state commit \{ oid \} author \{ login __typename \} \}/, 'reviews must carry the reviewed commit and the reviewer type');
+  // Permission comes from the collaborator permission endpoint, never from authorAssociation:
+  // an organisation MEMBER with read-only access has the same association as a maintainer.
+  assert.match(text, /repos\/\$\{GH_REPO\}\/collaborators\/\$\{login\}\/permission/);
+  assert.match(text, /case "\$perm" in\n\s*admin\|write\) /, 'only admin/write (maintain reports as write) may approve');
+  assert.doesNotMatch(text, /authorAssociation/);
+  // A login is validated before it is placed in a URL path.
+  assert.match(text, /\[\[ "\$login" =~ \^\[A-Za-z0-9_-\]\+\$ \]\]/);
+});
+
+test('approvers: a human approval on the head commit counts', () => {
+  assert.deepEqual(approvers([review('alice', 'APPROVED')]), ['alice']);
+});
+
+test('approvers: bot approvals never count, whatever their login looks like', () => {
+  assert.deepEqual(approvers([review('copilot-pull-request-reviewer', 'APPROVED', HEAD, 'Bot')]), []);
+  assert.deepEqual(approvers([review('camunda-sdk-automation[bot]', 'APPROVED', HEAD, 'Bot')]), []);
+  assert.deepEqual(approvers([review('lookalike[bot]', 'APPROVED', HEAD, 'User')]), []);
+  assert.deepEqual(approvers([review('ghost-mannequin', 'APPROVED', HEAD, 'Mannequin')]), []);
+  assert.deepEqual(approvers([review(null, 'APPROVED')]), [], 'a deleted account has no author');
+});
+
+test('approvers: no approval, or only comments, yields nobody', () => {
+  assert.deepEqual(approvers([]), []);
+  assert.deepEqual(approvers([review('alice', 'COMMENTED')]), []);
+  assert.deepEqual(approvers([review('alice', 'PENDING')]), []);
+});
+
+test('approvers: an approval of an older commit does not carry over to new commits', () => {
+  assert.deepEqual(approvers([review('alice', 'APPROVED', OLD)]), []);
+  assert.deepEqual(approvers([review('alice', 'APPROVED', OLD), review('bob', 'APPROVED', HEAD)]), ['bob']);
+});
+
+test("approvers: a reviewer's latest decisive review wins", () => {
+  assert.deepEqual(approvers([review('alice', 'APPROVED'), review('alice', 'CHANGES_REQUESTED')]), []);
+  assert.deepEqual(approvers([review('alice', 'APPROVED'), review('alice', 'DISMISSED')]), []);
+  assert.deepEqual(approvers([review('alice', 'CHANGES_REQUESTED'), review('alice', 'APPROVED')]), ['alice']);
+  // A later plain comment does not withdraw an approval.
+  assert.deepEqual(approvers([review('alice', 'APPROVED'), review('alice', 'COMMENTED')]), ['alice']);
 });
