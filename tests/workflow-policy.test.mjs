@@ -257,3 +257,60 @@ test("approvers: a reviewer's latest decisive review wins", () => {
   // A later plain comment does not withdraw an approval.
   assert.deepEqual(approvers([review('alice', 'APPROVED'), review('alice', 'COMMENTED')]), ['alice']);
 });
+
+// ---------------------------------------------------------------------------
+// Instruction-like text flagging in the agent prompts (camunda/sdk-infra#84, option 4)
+// ---------------------------------------------------------------------------
+
+// Mitigation only: the tripwire adds a notice to the *trusted* part of the prompt. These
+// tests pin that it neither replaces nor weakens what actually limits an injection, i.e.
+// the nonce-framed untrusted block, and that it never moves untrusted text outside it.
+const FLAGGING = [
+  ['sdk-agent-pr-followup.yml', 'BEGIN UNTRUSTED FEEDBACK', /\/tmp\/feedback\.md/],
+  ['sdk-agent-example-coverage.yml', 'BEGIN UNTRUSTED ISSUE', /\/tmp\/issue-title\.txt \/tmp\/issue-body\.md/],
+];
+
+for (const [name, begin, scanned] of FLAGGING) {
+  test(`${name}: untrusted text is scanned for instruction-like content before the prompt is built`, () => {
+    const text = code(read(name));
+    const step = /\n\s+- name: Run Copilot CLI\n([\s\S]*?)(?=\n\s+- name: )/.exec(text);
+    assert.ok(step, 'expected a "Run Copilot CLI" step');
+    const agent = step[1];
+    const scan = /flags="\$\([^\n]*"\$\{SDK_INFRA\}\/\.github\/scripts\/flag-injection\.sh"[^\n]*\)"/.exec(agent);
+    assert.ok(scan, 'the step must run flag-injection.sh from the sdk-infra checkout');
+    assert.match(scan[0], scanned, 'the scan must read all of the untrusted text');
+    assert.ok(agent.indexOf(scan[0]) < agent.indexOf('copilot --yolo'), 'the scan must run before the agent');
+    // The notice is part of the trusted prompt, so it sits above the untrusted block, and
+    // it interpolates only the category names the script prints.
+    const after = agent.slice(agent.indexOf(scan[0]) + scan[0].length);
+    const warn = /if \[ -n "\$flags" \]; then\n\s*echo "::warning::[^\n]*\$\{flags\}[^\n]*"\n\s*fi\b/.exec(after);
+    assert.ok(warn, 'the finding must be visible in the run log');
+    const notice = /if \[ -n "\$flags" \]; then\n(\s*printf '[^\n]*%s[^\n]*' "\$flags"\n)\s*fi\b/.exec(after);
+    assert.ok(notice, 'expected a notice, built from the category names, guarded on the scan output');
+    assert.ok(agent.indexOf(notice[0]) < agent.indexOf(begin), 'the notice must come before the untrusted block');
+    assert.doesNotMatch(notice[0], /feedback\.md|issue-body|issue-title|\$COMMENT_BODY/, 'the notice must not repeat untrusted text');
+  });
+
+  test(`${name}: flagging does not weaken the nonce framing or add a way to skip the agent`, () => {
+    const text = code(read(name));
+    assert.match(text, /nonce="\$\(od -An -N12 -tx1 \/dev\/urandom \| tr -d ' \\n'\)"/, 'a per-run nonce must still be generated');
+    assert.match(text, new RegExp(`${begin} \\$\\{nonce\\}`), 'the begin marker must carry the nonce');
+    assert.match(text, /END UNTRUSTED (FEEDBACK|ISSUE) \$\{nonce\}/, 'the end marker must carry the nonce');
+    // Findings only warn: nothing may turn a match into an exit, which would let anyone who
+    // can put text in front of the agent stop it from running at all.
+    const scanLine = /flags="\$\([^\n]*flag-injection\.sh[^\n]*\n/.exec(text)[0];
+    assert.doesNotMatch(scanLine, /\|\| (exit|return)|&& exit/);
+    assert.doesNotMatch(text, /if \[ -n "\$flags" \]; then\n(?:(?!\n\s*fi\b)[\s\S])*?\bexit [1-9]/);
+  });
+}
+
+test('flag-injection.sh is only ever run before the agent, from the helper checkout', () => {
+  // It must not appear in the credentialed publish job, where it would be one more
+  // process reading attacker text next to the App token.
+  for (const [name] of FLAGGING) {
+    const text = code(read(name));
+    const publish = /\n  publish:\n[\s\S]*/.exec(text);
+    assert.ok(publish, `${name}: expected a publish job`);
+    assert.doesNotMatch(publish[0], /flag-injection/, `${name}: the publish job must not run the scan`);
+  }
+});
