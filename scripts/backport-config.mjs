@@ -149,7 +149,11 @@ function parseArgs(argv) {
   return { command, opts };
 }
 
-const readLines = (path) => readFileSync(path, 'utf8').split('\n').map((l) => l.trim()).filter(Boolean);
+// File lists come from `git diff -z`: NUL-separated and unquoted. Names are kept
+// byte for byte (no trimming): ` client/x` is not `client/x`, and the generated-path
+// check is a security boundary. Newline-separated input is accepted for local use.
+export const readFileList = (text) => text.split(text.includes('\0') ? '\0' : '\n').filter((l) => l !== '');
+const readLines = (path) => readFileList(readFileSync(path, 'utf8'));
 
 export function main(argv, { stdout = process.stdout, stderr = process.stderr } = {}) {
   const { command, opts } = parseArgs(argv);

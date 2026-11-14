@@ -9,6 +9,7 @@ import {
   main,
   matchGlob,
   outsideGenerated,
+  readFileList,
   resolve,
   validateConfig,
 } from '../scripts/backport-config.mjs';
@@ -124,4 +125,14 @@ test('CLI: resolve, check-diff and invalid config exit codes', () => {
   assert.match(e.err, /::error::\.github\/backport\.yml: the file is empty/);
 
   assert.throws(() => run(['frobnicate', '--config', join(dir, 'cfg.json')]), /unknown command/);
+});
+
+test('file lists keep names byte for byte, so whitespace cannot fake a generated path', () => {
+  assert.deepEqual(readFileList('client/a.go\0 client/b.go\0'), ['client/a.go', ' client/b.go']);
+  assert.deepEqual(readFileList('a\nb\n'), ['a', 'b']);
+  assert.deepEqual(outsideGenerated(GO, readFileList('client/a.go\0 client/runtime.go\0')), [' client/runtime.go']);
+  const dir = mkdtempSync(join(tmpdir(), 'backport-config-'));
+  writeFileSync(join(dir, 'cfg.json'), JSON.stringify(GO));
+  writeFileSync(join(dir, 'diff.txt'), 'client/a.go\0 client/runtime.go\0');
+  assert.equal(run(['check-diff', '--config', join(dir, 'cfg.json'), '--changed', join(dir, 'diff.txt')]).code, 1);
 });
