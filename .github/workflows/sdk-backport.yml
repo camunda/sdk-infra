@@ -312,7 +312,7 @@ jobs:
             exit 1
           fi
           yq -o=json '.' "$cfg" > "${RUNNER_TEMP}/backport.json"
-          git diff --name-only "origin/${BASE}...HEAD" > "${RUNNER_TEMP}/changed.txt"
+          git diff --no-renames --name-only "origin/${BASE}...HEAD" > "${RUNNER_TEMP}/changed.txt"
           if ! node .sdk-infra/scripts/backport-config.mjs resolve --config "${RUNNER_TEMP}/backport.json" \
               --from "$SOURCE_BASE" --changed "${RUNNER_TEMP}/changed.txt" > "${RUNNER_TEMP}/resolved.json"; then
             status no-config "\`.github/backport.yml\` on \`${BASE}\` is invalid (see the run log)"
@@ -378,10 +378,14 @@ jobs:
             exit 1
           fi
 
-          # Only generated paths are committed; publish rejects anything else. A path
-          # that no longer exists was already staged as deleted by `git rm`.
+          # Only generated paths are committed; publish rejects anything else. A path is
+          # staged if it exists or is still in the index (the generator deleted what
+          # `git restore` put back); one that is in neither was removed by `git rm`.
+          # --no-renames elsewhere: a rename lists only its destination otherwise.
           existing=()
-          for p in "${paths[@]}"; do [ -e "$p" ] && existing+=("$p"); done
+          for p in "${paths[@]}"; do
+            if [ -e "$p" ] || git ls-files --error-unmatch -- "$p" >/dev/null 2>&1; then existing+=("$p"); fi
+          done
           if [ "${#existing[@]}" -gt 0 ]; then git add -A -- "${existing[@]}"; fi
           if git diff --cached --quiet HEAD; then
             status unchanged "generated code already matches \`${BASE}\`"
@@ -522,7 +526,7 @@ jobs:
               return 1
             fi
             git show "origin/${base}:.github/backport.yml" | yq -o=json '.' > "${RUNNER_TEMP}/cfg-${pr}.json" || return 1
-            git diff --name-only "origin/${branch}" "$sha" > "${RUNNER_TEMP}/diff-${pr}.txt"
+            git diff --no-renames --name-only "origin/${branch}" "$sha" > "${RUNNER_TEMP}/diff-${pr}.txt"
             if ! node .sdk-infra/scripts/backport-config.mjs check-diff --config "${RUNNER_TEMP}/cfg-${pr}.json" --changed "${RUNNER_TEMP}/diff-${pr}.txt"; then
               echo "::error::#${pr}: the regeneration commit touches non-generated paths; not pushing."
               return 1
