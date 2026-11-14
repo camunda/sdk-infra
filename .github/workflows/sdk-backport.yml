@@ -40,7 +40,7 @@
 #       permissions:
 #         contents: read
 #         id-token: write        # Vault JWT for the App key
-#         pull-requests: read
+#         pull-requests: write  # failure comments when the App token is unavailable
 #       uses: camunda/sdk-infra/.github/workflows/sdk-backport.yml@v1
 #       secrets:
 #         VAULT_ADDR: ${{ secrets.VAULT_ADDR }}
@@ -418,6 +418,7 @@ jobs:
     permissions:
       contents: read
       id-token: write        # Vault JWT for the App key
+      pull-requests: write   # report failures with GITHUB_TOKEN when the App token is unavailable
     env:
       PRS: ${{ needs.backport.outputs.prs }}
       SOURCE_PR: ${{ needs.backport.outputs.source-pr }}
@@ -483,8 +484,16 @@ jobs:
           set -uo pipefail
           failed=0
           REMOTE="https://x-access-token:${APP_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          # Every PR whose outcome is known (pushed, unchanged, or explained in a
+          # comment) is recorded; the next step reports on all the others.
+          reported="${RUNNER_TEMP}/reported.txt"
+          : > "$reported"
           comment() {
-            gh pr comment "$1" --repo "$GITHUB_REPOSITORY" --body "$2" || echo "::error::Could not comment on #$1."
+            if gh pr comment "$1" --repo "$GITHUB_REPOSITORY" --body "$2"; then
+              echo "$1" >> "$reported"
+            else
+              echo "::error::Could not comment on #$1."
+            fi
           }
           publish_one() {
             local pr=$1 branch=$2 base=$3 dir="${RUNNER_TEMP}/results/backport-regen-$1"
@@ -536,10 +545,37 @@ jobs:
           }
           while read -r pr branch base; do
             echo "::group::#${pr} (${branch} -> ${base})"
-            publish_one "$pr" "$branch" "$base" || failed=1
+            if publish_one "$pr" "$branch" "$base"; then
+              echo "$pr" >> "$reported"
+            else
+              failed=1
+              # A failure after regeneration succeeded (fetch, bundle or diff check, push)
+              # has no comment of its own yet.
+              grep -qx "$pr" "$reported" || comment "$pr" "The regenerated code for this backport could not be pushed, so it may still carry the generated files of #${SOURCE_PR}'s branch. See the [run](${RUN_URL}); comment \`/backport\` on #${SOURCE_PR} to retry."
+            fi
             echo "::endgroup::"
           done < <(jq -r '.[] | "\(.pr) \(.branch) \(.base)"' <<< "$PRS")
           exit "$failed"
+
+      # Independent of Vault, the App token and the step above: if any of them failed,
+      # the backport PRs it didn't report on still learn why they kept the source
+      # branch's generated code.
+      - name: Report unpublished backports
+        if: always() && env.PRS != '[]'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          reported="${RUNNER_TEMP}/reported.txt"
+          touch "$reported"
+          missing=0
+          while read -r pr; do
+            grep -qx "$pr" "$reported" && continue
+            missing=1
+            gh pr comment "$pr" --repo "$GITHUB_REPOSITORY" --body "The Backport workflow could not publish regenerated code for this backport, so it may still carry the generated files of #${SOURCE_PR}'s branch. See the [run](${RUN_URL}); comment \`/backport\` on #${SOURCE_PR} to retry." \
+              || echo "::error::Could not comment on #${pr}."
+          done < <(jq -r '.[].pr' <<< "$PRS")
+          exit "$missing"
 
       # The action only fails its step on unexpected errors. When a target can't be
       # backported it comments on the source PR and reports was_successful=false.

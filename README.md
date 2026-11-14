@@ -174,7 +174,7 @@ jobs:
     permissions:
       contents: read
       id-token: write        # Vault JWT for the App key
-      pull-requests: read
+      pull-requests: write  # failure comments when the App token is unavailable
     uses: camunda/sdk-infra/.github/workflows/sdk-backport.yml@v1
     secrets:
       VAULT_ADDR: ${{ secrets.VAULT_ADDR }}

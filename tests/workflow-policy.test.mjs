@@ -197,6 +197,10 @@ test('sdk-backport runs the SDK generator without credentials and pushes only ve
   assert.match(pub, /rev-list --count "origin\/\$\{branch\}\.\.\$\{sha\}"\)" != 1/);
   assert.match(pub, /if ! node \.sdk-infra\/scripts\/backport-config\.mjs check-diff[^\n]*; then\n[^\n]*\n\s*return 1\n/);
   assert.ok(pub.indexOf('check-diff') < pub.indexOf('git push'), 'the diff check must precede the push');
+  // Every backport PR the publish step did not report on gets a comment from a step
+  // that does not depend on Vault, the App token or the publish step succeeding.
+  assert.match(pub, /- name: Report unpublished backports\n\s+if: always\(\) && env\.PRS != '\[\]'\n\s+env:\n\s+GH_TOKEN: \$\{\{ github\.token \}\}/);
+  assert.match(pub, /grep -qx "\$pr" "\$reported" \|\| comment "\$pr"/, 'a failure without its own comment must be reported');
   assert.doesNotMatch(pub, /bash -c|\.\/scripts\/|codegen-setup|setup-sdk-toolchain/, 'publish must not run repo code');
 });
 
