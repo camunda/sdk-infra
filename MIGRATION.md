@@ -230,45 +230,66 @@ https://raw.githubusercontent.com/camunda/sdk-infra/refs/heads/main/policies/AGE
 ... (keep your existing repo-specific section)
 ```
 
-## Phase 5: Handwritten-only backport
+## Phase 5: Backport with regeneration
 
-OCA SDKs: add a thin caller and a **required** `.github/backport.yml`. The file is the contract — without it the workflow refuses to guess generated-code paths (camunda/sdk-infra#81).
+1. Add the caller, `.github/backport.yml` and, if the toolchain needs more than `actions/setup-sdk-toolchain` provides (e.g. Java for openapi-generator), `.github/actions/codegen-setup`:
 
-```yaml
-# .github/workflows/backport.yml
-on:
-  pull_request:
-    types: [closed]
-  issue_comment:
-    types: [created]
-permissions: {}
-jobs:
-  backport:
-    permissions:
-      contents: read
-      id-token: write
-      pull-requests: write
-      issues: write
-    uses: camunda/sdk-infra/.github/workflows/sdk-backport.yml@v1
-    secrets:
-      VAULT_ADDR: ${{ secrets.VAULT_ADDR }}
-      VAULT_JWT_PATH: ${{ secrets.VAULT_JWT_PATH }}
-      VAULT_JWT_ROLE: ${{ secrets.VAULT_JWT_ROLE }}
-      VAULT_JWT_AUDIENCE: ${{ secrets.VAULT_JWT_AUDIENCE }}
-```
+   ```yaml
+   # .github/workflows/backport.yml
+   name: Backport
+   on:
+     pull_request:
+       types: [closed, labeled]
+     issue_comment:
+       types: [created]
+   permissions: {}
+   concurrency:
+     group: backport-${{ github.event.pull_request.number || github.event.issue.number }}
+     cancel-in-progress: false
+   jobs:
+     backport:
+       permissions:
+         contents: read
+         id-token: write        # Vault JWT for the App key
+         pull-requests: read
+       uses: camunda/sdk-infra/.github/workflows/sdk-backport.yml@v1
+       secrets:
+         VAULT_ADDR: ${{ secrets.VAULT_ADDR }}
+         VAULT_JWT_PATH: ${{ secrets.VAULT_JWT_PATH }}
+         VAULT_JWT_ROLE: ${{ secrets.VAULT_JWT_ROLE }}
+         VAULT_JWT_AUDIENCE: ${{ secrets.VAULT_JWT_AUDIENCE }}
+   ```
 
-```yaml
-# .github/backport.yml
-skip-paths:
-  - src/gen/**
-  - external-spec/**
-  - spec-snapshots/**
-skip-subjects:
-  - 'chore(gen):'
-  - 'chore(regen):'
-```
+   ```yaml
+   # .github/backport.yml (commit it to main AND to every stable/N it should apply to)
+   language: go                 # optional: runs actions/setup-sdk-toolchain
+   generated-paths:             # restored from the target branch, then regenerated
+     - external-spec
+     - client
+     - pb
+     - facade_generated.go
+   regenerate: ./scripts/generate.sh   # must regenerate from the committed spec, not refetch it
+   # do-not-backport:           # optional, e.g. C# stable/9 whose generator diverged
+   #   - paths: [generator/**]
+   #     from: [main]
+   #     reason: the stable/9 generator diverged from main
+   ```
 
-C# should also set `do-not-backport` for `generator/**` between 9 and 10. Create labels `backport stable/N` for each live line.
+   ```yaml
+   # .github/actions/codegen-setup/action.yml (optional: setup the toolchain action lacks)
+   name: Codegen setup
+   runs:
+     using: composite
+     steps:
+       - uses: actions/setup-java@<sha> # vX.Y.Z
+         with: { distribution: temurin, java-version: '21' }
+   ```
+
+
+2. Commit `.github/backport.yml` (and `codegen-setup`) to **every live `stable/N`** as well as `main`: they are read from the target branch. Check that `regenerate` works offline from the committed spec on each line.
+3. Create a `backport stable/N` label for each live line.
+4. Make sure the Vault JWT role accepts `pull_request` and `issue_comment` runs of the repo, like the other App-token workflows.
+5. Delete any repo-local backport workflow (e.g. a copy of korthout/backport-action's example).
 
 ## What to delete from SDK repos after migration
 

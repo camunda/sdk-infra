@@ -63,9 +63,7 @@ Naming convention for the second commit:
 chore(gen): regenerate for <short summary of generator change>
 ```
 
-This split is a **backport prerequisite**, not just a review nicety. The handwritten-only backport workflow (`sdk-backport.yml`) cherry-picks the first commit onto `stable/N` and drops the regen commit: the target line regenerates from *its* spec. A single commit that mixes handwritten paths with generated ones (`src/gen/**`, etc.) is a hard failure — the workflow will not guess. See [`.github/backport.yml`](../schema/backport.schema.json) in each adopting SDK (required; a missing file is an error) and camunda/sdk-infra#81.
-
-Do **not** label a PR `backport stable/N` when the only change is generated output, or when it touches a generator that has diverged between those lines (C# 9 ↔ 10). Open a stable-only PR, or port by hand.
+Backports to `stable/N` regenerate on the target branch (`sdk-backport.yml`, configured by each repo's `.github/backport.yml`): the cherry-picked generated files are replaced by the target's own output in a separate `chore(gen): regenerate for backport of #N` commit. Do not hand-edit generated files on a backport PR; if the regeneration fails because the change depends on spec the target branch lacks, the change cannot be backported as-is.
 
 ## Bug fix process (red/green refactor)
 

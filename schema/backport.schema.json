@@ -1,25 +1,29 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "SDK handwritten backport policy",
-  "description": "Per-repo contract for camunda/sdk-infra's handwritten-only backport workflow. Lives at .github/backport.yml in each adopting SDK. A missing file is an error — the workflow will not guess paths.",
+  "title": "SDK backport configuration",
+  "description": "Per-repo configuration for camunda/sdk-infra's sdk-backport.yml. Lives at .github/backport.yml and is read from the backport's TARGET branch, so each stable line describes its own generator. A target branch without the file fails the regeneration for that backport (the workflow will not guess generated paths).",
   "type": "object",
   "additionalProperties": false,
+  "required": ["generated-paths"],
   "properties": {
-    "skip-paths": {
-      "type": "array",
-      "description": "Globs for generated / spec-snapshot paths. A commit whose changed files are all under these is dropped from the cherry-pick. A commit that mixes these with other paths is a hard failure (split the PR).",
-      "items": { "type": "string", "minLength": 1 },
-      "default": ["src/gen/**", "external-spec/**", "spec-snapshots/**"]
+    "language": {
+      "description": "Passed to actions/setup-sdk-toolchain before regenerating. Omit it when the repo's language is not supported there; the repo's .github/actions/codegen-setup action (if present on the target branch) then does all of the setup.",
+      "enum": ["js", "python", "csharp", "go", "rust", "java"]
     },
-    "skip-subjects": {
+    "generated-paths": {
       "type": "array",
-      "description": "Commit-subject prefixes that mark a regen-only commit. Matched as a case-sensitive prefix of the first line.",
-      "items": { "type": "string", "minLength": 1 },
-      "default": ["chore(gen):", "chore(regen):"]
+      "description": "Committed files and directories derived from the upstream spec or the generator, as repo-relative paths (no globs; they are passed to `git restore` as pathspecs). On each backport branch they are restored from the target branch and regenerated. An empty list turns regeneration off.",
+      "items": { "type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$))[^*?\\[\\]]+$" },
+      "uniqueItems": true
+    },
+    "regenerate": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Shell command, run from the repo root with bash, that regenerates generated-paths from the committed spec. It must not refetch the upstream spec: the target branch's committed copy is the input. Required when generated-paths is non-empty."
     },
     "do-not-backport": {
       "type": "array",
-      "description": "Path globs that must never be cherry-picked from one line onto another (e.g. a generator that diverged between stable/9 and stable/10). If any remaining commit touches a matching path and the source/target lines match, the whole PR is skipped.",
+      "description": "Paths that must never be cherry-picked onto this target branch, e.g. a generator that diverged between stable/9 and stable/10. If the backport changes a matching path, regeneration is skipped and the bot asks for the backport PR to be closed or reduced.",
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -28,17 +32,17 @@
           "paths": {
             "type": "array",
             "minItems": 1,
+            "description": "Globs: `**` matches across directories, `*` within one; a pattern without `/` matches the file name at any depth.",
             "items": { "type": "string", "minLength": 1 }
           },
           "from": {
             "type": "array",
-            "description": "Source branch names this rule applies to. Empty / omitted = any source.",
+            "description": "Source branches (the base of the original PR) this rule applies to. Omitted = any source.",
             "items": { "type": "string", "minLength": 1 }
           },
-          "to": {
-            "type": "array",
-            "description": "Target branch names this rule applies to. Empty / omitted = any target.",
-            "items": { "type": "string", "minLength": 1 }
+          "reason": {
+            "type": "string",
+            "description": "Shown in the bot comment."
           }
         }
       },
