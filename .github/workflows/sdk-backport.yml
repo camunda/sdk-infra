@@ -212,6 +212,8 @@ jobs:
       # Includes open backport PRs from earlier runs: on a retry the action reuses
       # existing branches and doesn't report them in created_pull_numbers, but a
       # failed regeneration must be retried.
+      # The limit is far above any realistic count of open App-authored PRs (gh pages
+      # through them); a lower cap could silently drop an old backport from the retry.
       - name: List backport PRs to regenerate
         id: prs
         if: ${{ !cancelled() }}
@@ -224,7 +226,7 @@ jobs:
           prefix="${BRANCH_TEMPLATE%%\$\{target_branch\}}"
           prefix="${prefix//\$\{pull_number\}/$SOURCE_PR}"
           prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --author app/camunda-sdk-automation \
-            --limit 100 --json number,headRefName,baseRefName,headRepositoryOwner \
+            --limit 1000 --json number,headRefName,baseRefName,headRepositoryOwner \
             --jq "[.[] | select(.headRepositoryOwner.login == env.GITHUB_REPOSITORY_OWNER)
                        | select(.headRefName | startswith(\"${prefix}\"))
                        | {pr: .number, branch: .headRefName, base: .baseRefName}]")
