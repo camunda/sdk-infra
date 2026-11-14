@@ -44,7 +44,8 @@ export function matchGlob(pattern, file) {
         out += glob[i].replace(/[.+^${}()|[\]\\]/g, '\\$&');
       }
     }
-    return new RegExp(`^${out}$`);
+    // dotAll: `.` must match a newline too, or a file name containing one escapes `**` rules.
+    return new RegExp(`^${out}$`, 's');
   };
   if (toRe(p).test(f)) return true;
   if (!p.includes('/')) return toRe(`**/${p}`).test(f);

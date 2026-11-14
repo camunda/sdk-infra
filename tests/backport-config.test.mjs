@@ -136,3 +136,10 @@ test('file lists keep names byte for byte, so whitespace cannot fake a generated
   writeFileSync(join(dir, 'diff.txt'), 'client/a.go\0 client/runtime.go\0');
   assert.equal(run(['check-diff', '--config', join(dir, 'cfg.json'), '--changed', join(dir, 'diff.txt')]).code, 1);
 });
+
+test('globs match file names containing newlines', () => {
+  assert.ok(matchGlob('scripts/gen/**', 'scripts/gen/a\nb.py'));
+  assert.ok(matchGlob('*.py', 'x/a\nb.py'));
+  const cfg = { ...GO, 'do-not-backport': [{ paths: ['scripts/gen/**'] }] };
+  assert.equal(blockedFiles(cfg, { from: 'main', changed: readFileList('scripts/gen/evil\nname.py\0') }).length, 1);
+});
