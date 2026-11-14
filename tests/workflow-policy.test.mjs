@@ -186,6 +186,8 @@ test('sdk-backport runs the SDK generator without credentials and pushes only ve
   assert.match(regen, /cfg=\.backport-base\/\.github\/backport\.yml/);
   assert.match(regen, /uses: \.\/\.backport-base\/\.github\/actions\/codegen-setup/);
 
+  // Committed conflict markers fail the backport on both paths, with and without regeneration.
+  assert.equal((regen.match(/git grep -lE '\^\(<<<<<<<\|>>>>>>>\) ' HEAD/g) ?? []).length, 2);
   // Nothing checks out the source PR's head; korthout cherry-picks the merged commit.
   assert.doesNotMatch(text, /github\.event\.pull_request\.head/);
 

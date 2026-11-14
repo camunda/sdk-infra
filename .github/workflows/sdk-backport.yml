@@ -330,6 +330,13 @@ jobs:
             exit 0
           fi
           if [ "$(jq '.generatedPaths | length' "${RUNNER_TEMP}/resolved.json")" -eq 0 ]; then
+            # Nothing is regenerated, so every file is hand-written: the conflict check
+            # in the regenerate step would never run.
+            if conflicted=$(git grep -lE '^(<<<<<<<|>>>>>>>) ' HEAD -- .); then
+              # shellcheck disable=SC2016 # backticks in single quotes are Markdown
+              status failed "$(printf 'the cherry-pick left conflicts in hand-written code:\n%s' "$(sed 's/^HEAD:/- `/; s/$/`/' <<< "$conflicted")")"
+              exit 1
+            fi
             status unchanged "this repository declares no generated paths"
             echo "action=none" >> "$GITHUB_OUTPUT"
             exit 0
