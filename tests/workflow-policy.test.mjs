@@ -209,6 +209,8 @@ test('sdk-backport runs the SDK generator without credentials and pushes only ve
   for (const m of pub.matchAll(/git diff -z[^\n]*/g)) assert.match(m[0], /\|\| return 1$/, m[0]);
   assert.match(pub, /if ! node \.sdk-infra\/scripts\/backport-config\.mjs check-adapt[^\n]*\\\n[^\n]*; then\n[^\n]*\n\s*return 1\n/);
   assert.ok(pub.indexOf('check-adapt') < pub.indexOf('git push'), 'the adapt check must precede the push');
+  // An adapt commit is only accepted when the target's own config enables the hook.
+  assert.match(pub, /if \[ -n "\$adapt_sha" \] && \[ -z "\$\(jq -r '\.\["post-cherry-pick"\] \/\/ ""' "\$\{RUNNER_TEMP\}\/cfg-\$\{pr\}\.json"\)" \]; then\n[^\n]*\n\s*return 1\n/);
   assert.match(pub, /if ! node \.sdk-infra\/scripts\/backport-config\.mjs check-diff[^\n]*; then\n[^\n]*\n\s*return 1\n/);
   assert.ok(pub.indexOf('check-diff') < pub.indexOf('git push'), 'the diff check must precede the push');
   // Every backport PR the publish step did not report on gets a comment from a step

@@ -638,6 +638,10 @@ jobs:
               return 1
             fi
             git show "origin/${base}:.github/backport.yml" | yq -o=json '.' > "${RUNNER_TEMP}/cfg-${pr}.json" || return 1
+            if [ -n "$adapt_sha" ] && [ -z "$(jq -r '.["post-cherry-pick"] // ""' "${RUNNER_TEMP}/cfg-${pr}.json")" ]; then
+              echo "::error::#${pr}: an adapt commit was reported, but ${base}'s .github/backport.yml has no post-cherry-pick; not pushing."
+              return 1
+            fi
             parent="origin/${branch}"
             if [ -n "$adapt_sha" ]; then
               # A failed diff would be an empty list, which passes the checks: stop instead.
