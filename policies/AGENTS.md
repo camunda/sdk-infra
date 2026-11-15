@@ -63,6 +63,8 @@ Naming convention for the second commit:
 chore(gen): regenerate for <short summary of generator change>
 ```
 
+Backports to `stable/N` regenerate on the target branch (`sdk-backport.yml`, configured by each repo's `.github/backport.yml`): the cherry-picked generated files are replaced by the target's own output in a separate `chore(gen): regenerate for backport of #N` commit. Do not hand-edit generated files on a backport PR; if the regeneration fails because the change depends on spec the target branch lacks, the change cannot be backported as-is.
+
 ## Bug fix process (red/green refactor)
 
 Every bug fix **must** follow the red/green refactor discipline:

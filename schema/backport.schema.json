@@ -1,0 +1,52 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SDK backport configuration",
+  "description": "Per-repo configuration for camunda/sdk-infra's sdk-backport.yml. Lives at .github/backport.yml and is read from the backport's TARGET branch, so each stable line describes its own generator. A target branch without the file fails the regeneration for that backport (the workflow will not guess generated paths).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["generated-paths"],
+  "properties": {
+    "language": {
+      "description": "Passed to actions/setup-sdk-toolchain before regenerating. Omit it when the repo's language is not supported there; the repo's .github/actions/codegen-setup action (if present on the target branch) then does all of the setup.",
+      "enum": ["js", "python", "csharp", "go", "rust", "java"]
+    },
+    "generated-paths": {
+      "type": "array",
+      "description": "Committed files and directories derived from the upstream spec or the generator, as repo-relative paths (no globs; they are passed to `git restore` as pathspecs). On each backport branch they are restored from the target branch and regenerated. An empty list turns regeneration off.",
+      "items": { "type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$))[^*?\\[\\]]+$" },
+      "uniqueItems": true
+    },
+    "regenerate": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Shell command, run from the repo root with bash, that regenerates generated-paths from the committed spec. It must not refetch the upstream spec: the target branch's committed copy is the input. Required when generated-paths is non-empty."
+    },
+    "do-not-backport": {
+      "type": "array",
+      "description": "Paths that must never be cherry-picked onto this target branch, e.g. a generator that diverged between stable/9 and stable/10. If the backport changes a matching path, regeneration is skipped and the bot asks for the backport PR to be closed or reduced.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["paths"],
+        "properties": {
+          "paths": {
+            "type": "array",
+            "minItems": 1,
+            "description": "Globs: `**` matches across directories, `*` within one; a pattern without `/` matches the file name at any depth.",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "from": {
+            "type": "array",
+            "description": "Source branches (the base of the original PR) this rule applies to. Omitted = any source.",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "reason": {
+            "type": "string",
+            "description": "Shown in the bot comment."
+          }
+        }
+      },
+      "default": []
+    }
+  }
+}
