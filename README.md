@@ -257,11 +257,10 @@ A conflict doesn't always show markers. If the source changes a file that doesn'
    git fetch origin
    git switch -C backport-<B>-to-stable/N origin/stable/N
    git cherry-pick -x <B's merge commit on main>
-   # apply post-cherry-pick by hand if it applies (e.g. Go's /vN imports), then build and test
    git push --force-with-lease=backport-<B>-to-stable/N:<old head> origin backport-<B>-to-stable/N
    ```
 
-   Then comment `/backport` on B's source PR to regenerate it, and mark the PR ready.
+   Don't build or adapt it by hand: the branch still carries `main`'s generated code. Comment `/backport` on B's source PR, which runs `post-cherry-pick` and regenerates. Mark the PR ready once its CI passes on the result.
 
 Automating both steps (auto-merging clean backports, and rebuilding drafted ones when the target branch moves) is tracked in camunda/sdk-infra#110.
 
