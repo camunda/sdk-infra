@@ -496,6 +496,15 @@ jobs:
               if [ -e "$p" ] || git ls-files --error-unmatch -- "$p" >/dev/null 2>&1; then existing+=("$p"); fi
             done
             if [ "${#existing[@]}" -gt 0 ]; then git add -A -- "${existing[@]}"; fi
+            # Anything the regeneration changed outside generated-paths would be left
+            # behind unstaged, and the backport would keep the source branch's copy. Fail
+            # instead, naming the files, so the config gets fixed (generated-paths, or
+            # .gitignore for build output). Staged entries have a blank second column.
+            stray=$(git status --porcelain --untracked-files=all | grep -v '^[^ ?] ' || true)
+            if [ -n "$stray" ]; then
+              status failed "\`${regenerate}\` changed files outside \`generated-paths\` on \`${BASE}\`: $(printf '%s\n' "$stray" | cut -c4- | head -n 20 | paste -sd ',' - | sed 's/,/, /g'). Add them to \`generated-paths\` in \`.github/backport.yml\` on \`${BASE}\` (or to \`.gitignore\` if they are build output)"
+              exit 1
+            fi
             if ! git diff --cached --quiet HEAD; then
               git commit -q -m "chore(gen): regenerate for backport of #${SOURCE_PR}" \
                 -m "Restore the generated paths from ${BASE} and regenerate from its committed spec." || { status failed "could not commit"; exit 1; }
