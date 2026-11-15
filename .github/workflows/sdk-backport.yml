@@ -11,17 +11,22 @@
 #
 # Jobs:
 #   backport    gate the sender; open the backport PRs with korthout/backport-action
-#               as camunda-sdk-automation, so the target branch's required CI runs.
+#               as camunda-sdk-automation, so the target branch's required CI runs;
+#               reword conflict commits so they pass commitlint.
 #   regenerate  one leg per backport PR. Runs the SDK's generator, so it holds no
-#               credentials (contents: read, no id-token). Its only output is an
-#               artifact: a status file and a git bundle of the regeneration commit.
-#   publish     verifies each bundle (a fast-forward of the backport branch that
-#               only touches generated paths), pushes it, and comments on failures.
+#               credentials (contents: read, no id-token). Runs the optional
+#               post-cherry-pick command (adapt commit), then regenerates (regeneration
+#               commit). Its only output is an artifact: a status file and a git bundle.
+#   publish     verifies each bundle (a fast-forward of exactly the reported commits:
+#               the adapt commit only touches hand-written files the backport changes,
+#               the regeneration commit only generated paths), pushes it, and comments
+#               on failures.
 #
 # Per-repo configuration, read from the TARGET branch so each stable line describes
 # its own generator (schema: schema/backport.schema.json):
 #   .github/backport.yml                       generated paths, regenerate command,
-#                                              language, do-not-backport rules
+#                                              post-cherry-pick command, language,
+#                                              do-not-backport rules
 #   .github/actions/codegen-setup/action.yml   optional composite action for setup
 #                                              beyond actions/setup-sdk-toolchain
 #
@@ -237,6 +242,37 @@ jobs:
             echo "source-base=${source_base}"
           } >> "$GITHUB_OUTPUT"
 
+      # korthout commits a conflicted cherry-pick as " BACKPORT-CONFLICT", which no
+      # commitlint config accepts, so the backport PR's checks fail even after a person
+      # resolves the conflicts. Reword it to the source PR's title (a Conventional
+      # Commit, since SDK repos lint PR titles). Only the message changes; the
+      # lease makes the push a no-op if anyone pushed to the branch meanwhile.
+      - name: Reword conflict commits
+        if: ${{ !cancelled() && steps.prs.outputs.prs != '' && steps.prs.outputs.prs != '[]' }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PRS: ${{ steps.prs.outputs.prs }}
+          SOURCE_PR: ${{ steps.prs.outputs.source-pr }}
+        run: |
+          set -euo pipefail
+          title=$(gh pr view "$SOURCE_PR" --repo "$GITHUB_REPOSITORY" --json title -q .title)
+          git config user.name 'camunda-sdk-automation[bot]'
+          git config user.email '290741040+camunda-sdk-automation[bot]@users.noreply.github.com'
+          while read -r branch base; do
+            git fetch -q origin "+refs/heads/${branch}:refs/remotes/origin/${branch}"
+            old=$(git rev-parse "origin/${branch}")
+            subject=$(git log -1 --format=%s "$old")
+            [[ "$subject" =~ ^[[:space:]]*BACKPORT-CONFLICT[[:space:]]*$ ]] || continue
+            git checkout -q --detach "$old"
+            git commit -q --amend --no-verify -m "$title" \
+              -m "Cherry-picked from #${SOURCE_PR} onto ${base} with conflicts. The conflict markers are committed as-is and must be resolved before this backport is merged."
+            if git push -q --force-with-lease="refs/heads/${branch}:${old}" origin "HEAD:refs/heads/${branch}"; then
+              echo "${branch}: reworded the conflict commit to \"${title}\"."
+            else
+              echo "::warning::${branch}: could not reword the conflict commit (the branch moved?)."
+            fi
+          done < <(jq -r '.[] | "\(.branch) \(.base)"' <<< "$PRS")
+
   # Runs the SDK's generator, so it gets a read-only token and nothing else: no
   # id-token (any step could otherwise mint a Vault JWT), no persisted credentials.
   regenerate:
@@ -329,15 +365,16 @@ jobs:
             echo "action=none" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if [ "$(jq '.generatedPaths | length' "${RUNNER_TEMP}/resolved.json")" -eq 0 ]; then
-            # Nothing is regenerated, so every file is hand-written: the conflict check
-            # in the regenerate step would never run.
+          if [ "$(jq '.generatedPaths | length' "${RUNNER_TEMP}/resolved.json")" -eq 0 ] \
+              && [ -z "$(jq -r .postCherryPick "${RUNNER_TEMP}/resolved.json")" ]; then
+            # Nothing is regenerated or adapted, so every file is hand-written: the
+            # conflict check in the regenerate step would never run.
             if conflicted=$(git grep -lE '^(<<<<<<<|>>>>>>>) ' HEAD -- .); then
               # shellcheck disable=SC2016 # backticks in single quotes are Markdown
               status failed "$(printf 'the cherry-pick left conflicts in hand-written code:\n%s' "$(sed 's/^HEAD:/- `/; s/$/`/' <<< "$conflicted")")"
               exit 1
             fi
-            status unchanged "this repository declares no generated paths"
+            status unchanged "this repository declares no generated paths and no post-cherry-pick command"
             echo "action=none" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -354,7 +391,7 @@ jobs:
         if: steps.config.outputs.action == 'regenerate' && hashFiles('.backport-base/.github/actions/codegen-setup/action.yml') != ''
         uses: ./.backport-base/.github/actions/codegen-setup
 
-      - name: Restore generated paths from the target branch and regenerate
+      - name: Adapt to the target branch, restore generated paths and regenerate
         id: regen
         if: steps.config.outputs.action == 'regenerate'
         run: |
@@ -362,51 +399,85 @@ jobs:
           status() { jq --arg s "$1" --arg r "$2" '.status = $s | .reason = $r' "${OUT}/status.json" > "${OUT}/s.tmp" && mv "${OUT}/s.tmp" "${OUT}/status.json"; }
           mapfile -t paths < <(jq -r '.generatedPaths[]' "${RUNNER_TEMP}/resolved.json")
           regenerate=$(jq -r .regenerate "${RUNNER_TEMP}/resolved.json")
+          adapt=$(jq -r .postCherryPick "${RUNNER_TEMP}/resolved.json")
+          adapt_sha=""
+          regen_sha=""
 
           # Conflicts the action committed in hand-written files are for a person to resolve.
           excludes=()
           for p in "${paths[@]}"; do excludes+=(":(exclude)${p}"); done
           # shellcheck disable=SC2016 # backticks in single quotes are Markdown
           if conflicted=$(git grep -lE '^(<<<<<<<|>>>>>>>) ' HEAD -- . "${excludes[@]}"); then
-            status failed "$(printf 'the cherry-pick left conflicts in hand-written code:\n%s' "$(sed 's/^HEAD:/- `/; s/$/`/' <<< "$conflicted")")"
+            status failed "$(printf 'the cherry-pick left conflicts in hand-written code:\n%s\n\nResolve them on this branch, then comment `/backport` on #%s to adapt and regenerate it' "$(sed 's/^HEAD:/- `/; s/$/`/' <<< "$conflicted")" "$SOURCE_PR")"
             exit 1
           fi
 
-          for p in "${paths[@]}"; do
-            if git cat-file -e "origin/${BASE}:${p}" 2>/dev/null; then
-              git restore --source="origin/${BASE}" --staged --worktree -- "$p" || { status failed "could not restore \`${p}\` from \`${BASE}\`"; exit 1; }
-            else
-              # Generated on main only: remove it; the generator recreates it if the target produces it too.
-              git rm -rq --ignore-unmatch -- "$p"
+          # Branch-specific changes to hand-written code (e.g. Go's major-version module
+          # path), committed on their own. Confined to the files the backport changes.
+          if [ -n "$adapt" ]; then
+            echo "Running post-cherry-pick: ${adapt}"
+            if ! BACKPORT_BASE="$BASE" BACKPORT_SOURCE_BASE="$SOURCE_BASE" BACKPORT_CHANGED_FILES="${RUNNER_TEMP}/changed.txt" \
+                bash -c "$adapt"; then
+              status failed "the \`post-cherry-pick\` command \`${adapt}\` failed on \`${BASE}\`"
+              exit 1
             fi
-          done
-
-          echo "Running: ${regenerate}"
-          if ! bash -c "$regenerate"; then
-            status failed "\`${regenerate}\` failed on \`${BASE}\`. Either the change depends on spec that \`${BASE}\` doesn't have (then it can't be backported as-is), or the regeneration needs fixing"
-            exit 1
+            git add -A -- .
+            git diff --cached -z --no-renames --name-only HEAD > "${RUNNER_TEMP}/adapt.txt"
+            if ! node .sdk-infra/scripts/backport-config.mjs check-adapt --config "${RUNNER_TEMP}/backport.json" \
+                --changed "${RUNNER_TEMP}/adapt.txt" --allowed "${RUNNER_TEMP}/changed.txt"; then
+              status failed "the \`post-cherry-pick\` command changed files outside the backport (see the run log); it may only change hand-written files the backport already changes"
+              exit 1
+            fi
+            if ! git diff --cached --quiet HEAD; then
+              git commit -q -m "chore: adapt backport of #${SOURCE_PR} to ${BASE}" \
+                -m "Run the post-cherry-pick command from ${BASE}'s .github/backport.yml." || { status failed "could not commit"; exit 1; }
+              adapt_sha=$(git rev-parse HEAD)
+              git diff --stat HEAD~1 HEAD | tail -1
+            fi
           fi
 
-          # Only generated paths are committed; publish rejects anything else. A path is
-          # staged if it exists or is still in the index (the generator deleted what
-          # `git restore` put back); one that is in neither was removed by `git rm`.
-          # --no-renames elsewhere: a rename lists only its destination otherwise.
-          existing=()
-          for p in "${paths[@]}"; do
-            if [ -e "$p" ] || git ls-files --error-unmatch -- "$p" >/dev/null 2>&1; then existing+=("$p"); fi
-          done
-          if [ "${#existing[@]}" -gt 0 ]; then git add -A -- "${existing[@]}"; fi
-          if git diff --cached --quiet HEAD; then
-            status unchanged "generated code already matches \`${BASE}\`"
+          if [ "${#paths[@]}" -gt 0 ]; then
+            for p in "${paths[@]}"; do
+              if git cat-file -e "origin/${BASE}:${p}" 2>/dev/null; then
+                git restore --source="origin/${BASE}" --staged --worktree -- "$p" || { status failed "could not restore \`${p}\` from \`${BASE}\`"; exit 1; }
+              else
+                # Generated on main only: remove it; the generator recreates it if the target produces it too.
+                git rm -rq --ignore-unmatch -- "$p"
+              fi
+            done
+
+            echo "Running: ${regenerate}"
+            if ! bash -c "$regenerate"; then
+              status failed "\`${regenerate}\` failed on \`${BASE}\`. Either the change depends on spec that \`${BASE}\` doesn't have (then it can't be backported as-is), or the regeneration needs fixing"
+              exit 1
+            fi
+
+            # Only generated paths are committed; publish rejects anything else. A path is
+            # staged if it exists or is still in the index (the generator deleted what
+            # `git restore` put back); one that is in neither was removed by `git rm`.
+            # --no-renames elsewhere: a rename lists only its destination otherwise.
+            existing=()
+            for p in "${paths[@]}"; do
+              if [ -e "$p" ] || git ls-files --error-unmatch -- "$p" >/dev/null 2>&1; then existing+=("$p"); fi
+            done
+            if [ "${#existing[@]}" -gt 0 ]; then git add -A -- "${existing[@]}"; fi
+            if ! git diff --cached --quiet HEAD; then
+              git commit -q -m "chore(gen): regenerate for backport of #${SOURCE_PR}" \
+                -m "Restore the generated paths from ${BASE} and regenerate from its committed spec." || { status failed "could not commit"; exit 1; }
+              regen_sha=$(git rev-parse HEAD)
+              git diff --stat HEAD~1 HEAD | tail -1
+            fi
+          fi
+
+          if [ -z "$adapt_sha" ] && [ -z "$regen_sha" ]; then
+            status unchanged "nothing to adapt, and generated code already matches \`${BASE}\`"
             exit 0
           fi
-          git commit -q -m "chore(gen): regenerate for backport of #${SOURCE_PR}" \
-            -m "Restore the generated paths from ${BASE} and regenerate from its committed spec." || { status failed "could not commit"; exit 1; }
           git bundle create "${OUT}/regen.bundle" HEAD "^origin/${BRANCH}"
-          jq --arg sha "$(git rev-parse HEAD)" --arg base_sha "$(git rev-parse "origin/${BRANCH}")" \
-            '.status = "changed" | .reason = "" | .sha = $sha | .branchSha = $base_sha' "${OUT}/status.json" > "${OUT}/s.tmp" \
-            && mv "${OUT}/s.tmp" "${OUT}/status.json"
-          git diff --stat HEAD~1 HEAD | tail -1
+          jq --arg sha "$(git rev-parse HEAD)" --arg branch_sha "$(git rev-parse "origin/${BRANCH}")" \
+            --arg adapt "$adapt_sha" --arg regen "$regen_sha" \
+            '.status = "changed" | .reason = "" | .sha = $sha | .branchSha = $branch_sha | .adaptSha = $adapt | .regenSha = $regen' \
+            "${OUT}/status.json" > "${OUT}/s.tmp" && mv "${OUT}/s.tmp" "${OUT}/status.json"
 
       - name: Upload the result
         if: always()
@@ -539,15 +610,42 @@ jobs:
             if [ "$(git rev-parse FETCH_HEAD)" != "$sha" ]; then
               echo "::error::#${pr}: bundle head is not the reported ${sha}."; return 1
             fi
-            if [ "$(git rev-list --count "origin/${branch}..${sha}")" != 1 ] || ! git merge-base --is-ancestor "origin/${branch}" "$sha"; then
+            # The bundle is the adapt commit, the regeneration commit, or both in that
+            # order, directly on top of the branch. Each is checked against its own rule.
+            adapt_sha=$(jq -r '.adaptSha // ""' "${dir}/status.json")
+            regen_sha=$(jq -r '.regenSha // ""' "${dir}/status.json")
+            expected=()
+            [ -n "$adapt_sha" ] && expected+=("$adapt_sha")
+            [ -n "$regen_sha" ] && expected+=("$regen_sha")
+            mapfile -t actual < <(git rev-list --reverse "origin/${branch}..${sha}")
+            if [ "$(git rev-parse "origin/${branch}")" != "$(jq -r .branchSha "${dir}/status.json")" ] \
+                || ! git merge-base --is-ancestor "origin/${branch}" "$sha"; then
               comment "$pr" "The regenerated code was not pushed: \`${branch}\` moved while it was being regenerated. Comment \`/backport\` on #${SOURCE_PR} to retry. ([run](${RUN_URL}))"
               return 1
             fi
-            git show "origin/${base}:.github/backport.yml" | yq -o=json '.' > "${RUNNER_TEMP}/cfg-${pr}.json" || return 1
-            git diff -z --no-renames --name-only "origin/${branch}" "$sha" > "${RUNNER_TEMP}/diff-${pr}.txt"
-            if ! node .sdk-infra/scripts/backport-config.mjs check-diff --config "${RUNNER_TEMP}/cfg-${pr}.json" --changed "${RUNNER_TEMP}/diff-${pr}.txt"; then
-              echo "::error::#${pr}: the regeneration commit touches non-generated paths; not pushing."
+            if [ "${#expected[@]}" = 0 ] || [ "${actual[*]}" != "${expected[*]}" ] \
+                || [ "$(git rev-parse "${actual[0]}^")" != "$(git rev-parse "origin/${branch}")" ]; then
+              echo "::error::#${pr}: the bundle's commits (${actual[*]}) are not the reported adapt and regeneration commits (${expected[*]}); not pushing."
               return 1
+            fi
+            git show "origin/${base}:.github/backport.yml" | yq -o=json '.' > "${RUNNER_TEMP}/cfg-${pr}.json" || return 1
+            parent="origin/${branch}"
+            if [ -n "$adapt_sha" ]; then
+              git diff -z --no-renames --name-only "origin/${base}...origin/${branch}" > "${RUNNER_TEMP}/backport-${pr}.txt"
+              git diff -z --no-renames --name-only "$parent" "$adapt_sha" > "${RUNNER_TEMP}/adapt-${pr}.txt"
+              if ! node .sdk-infra/scripts/backport-config.mjs check-adapt --config "${RUNNER_TEMP}/cfg-${pr}.json" \
+                  --changed "${RUNNER_TEMP}/adapt-${pr}.txt" --allowed "${RUNNER_TEMP}/backport-${pr}.txt"; then
+                echo "::error::#${pr}: the adapt commit touches files outside the backport; not pushing."
+                return 1
+              fi
+              parent="$adapt_sha"
+            fi
+            if [ -n "$regen_sha" ]; then
+              git diff -z --no-renames --name-only "$parent" "$regen_sha" > "${RUNNER_TEMP}/diff-${pr}.txt"
+              if ! node .sdk-infra/scripts/backport-config.mjs check-diff --config "${RUNNER_TEMP}/cfg-${pr}.json" --changed "${RUNNER_TEMP}/diff-${pr}.txt"; then
+                echo "::error::#${pr}: the regeneration commit touches non-generated paths; not pushing."
+                return 1
+              fi
             fi
             git push -q "$REMOTE" "${sha}:refs/heads/${branch}" || return 1
             echo "#${pr}: pushed regenerated code (${sha})."

@@ -191,7 +191,10 @@ generated-paths:             # restored from the target branch, then regenerated
   - client
   - pb
   - facade_generated.go
-regenerate: ./scripts/generate.sh   # must regenerate from the committed spec, not refetch it
+# Must regenerate from the committed spec, not refetch it. Compile the tests too,
+# so a backport that breaks only test files fails here rather than in CI.
+regenerate: ./scripts/generate.sh && go vet ./...
+# post-cherry-pick:          # optional: adapt hand-written code to the target branch (below)
 # do-not-backport:           # optional, e.g. C# stable/9 whose generator diverged
 #   - paths: [generator/**]
 #     from: [main]
@@ -211,7 +214,21 @@ runs:
 
 Label a merged PR `backport stable/10` (labelling after the merge works too), or comment `/backport` on it. For each label, the workflow opens a backport PR as `camunda-sdk-automation` (so the target branch's required CI runs) with the whole commit cherry-picked: hand-written code, infra and generator changes. On each backport branch it then restores `generated-paths` from the target branch, runs `regenerate` there, and pushes the result as a separate `chore(gen): regenerate for backport of #N` commit. That replaces main's generated output and clears cherry-pick conflicts in generated files.
 
-`.github/backport.yml` and `.github/actions/codegen-setup` are read from the **target** branch, so each stable line describes its own generator; a target branch without the config gets a failure comment rather than a guess (schema: [schema/backport.schema.json](schema/backport.schema.json)). The regeneration runs with a read-only token and no secrets; a separate job pushes its commit only if it is a fast-forward of the backport branch that touches nothing but generated paths. Failures (conflicts in hand-written code, a regeneration that fails because the change needs spec the target lacks, a `do-not-backport` hit) are reported as comments on the backport PR.
+`.github/backport.yml` and `.github/actions/codegen-setup` are read from the **target** branch, so each stable line describes its own generator; a target branch without the config gets a failure comment rather than a guess (schema: [schema/backport.schema.json](schema/backport.schema.json)). The regeneration runs with a read-only token and no secrets; a separate job pushes its commits only as a fast-forward of the backport branch in which the regeneration commit touches nothing but generated paths and the adapt commit (below) nothing but hand-written files the backport changes. Failures (conflicts in hand-written code, a regeneration that fails because the change needs spec the target lacks, a `do-not-backport` hit) are reported as comments on the backport PR.
+
+**Adapting hand-written code (`post-cherry-pick`).** Some differences between `main` and a stable line are mechanical, such as Go's major version in the module path (`/v11` on `main`, `/v10` on `stable/10`), so every backport that touches an import needs the same edit. `post-cherry-pick` is a command run after the cherry-pick and before regeneration, in the same credential-less job. Its changes are pushed as a separate `chore: adapt backport of #N to stable/N` commit, and only if it changes nothing but hand-written files the backport already changes; anything else fails the backport. It gets `BACKPORT_BASE` (the target branch), `BACKPORT_SOURCE_BASE` (the source PR's base, available as `origin/<it>`) and `BACKPORT_CHANGED_FILES` (a NUL-separated list of the files the backport changes). For Go:
+
+```yaml
+post-cherry-pick: |
+  src=$(git show "origin/${BACKPORT_SOURCE_BASE}:go.mod" | awk '$1 == "module" {print $2; exit}')
+  dst=$(awk '$1 == "module" {print $2; exit}' go.mod)
+  [ "$src" = "$dst" ] && exit 0
+  while IFS= read -r -d '' f; do
+    [ -f "$f" ] && case "$f" in *.go|*.md) SRC="$src" DST="$dst" perl -pi -e 's{\Q$ENV{SRC}\E(?=["/`\s])}{$ENV{DST}}g' -- "$f" ;; esac
+  done < "$BACKPORT_CHANGED_FILES"
+```
+
+**Conflicts.** When the cherry-pick conflicts, korthout/backport-action commits the conflict markers as ` BACKPORT-CONFLICT`, which commitlint rejects. The workflow rewords that commit to the source PR's title (only the message changes) and comments on the backport PR with the conflicted files. Resolve them on the backport branch, then comment `/backport` on the source PR to adapt and regenerate it.
 
 PRs from forks get no secrets on `pull_request`; backport those with a `/backport` comment.
 

@@ -4,6 +4,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  adaptOutsideBackport,
   blockedFiles,
   isGenerated,
   main,
@@ -86,6 +87,7 @@ test('resolve fills defaults', () => {
     language: '',
     generatedPaths: [],
     regenerate: '',
+    postCherryPick: '',
     blocked: [],
   });
 });
@@ -110,7 +112,13 @@ test('CLI: resolve, check-diff and invalid config exit codes', () => {
 
   const r = run(['resolve', '--config', cfg, '--from', 'main', '--changed', changed]);
   assert.equal(r.code, 0);
-  assert.deepEqual(JSON.parse(r.out), { language: 'go', generatedPaths: GO['generated-paths'], regenerate: './scripts/generate.sh', blocked: [] });
+  assert.deepEqual(JSON.parse(r.out), {
+    language: 'go',
+    generatedPaths: GO['generated-paths'],
+    regenerate: './scripts/generate.sh',
+    postCherryPick: '',
+    blocked: [],
+  });
 
   assert.equal(run(['check-diff', '--config', cfg, '--changed', changed]).code, 0);
   writeFileSync(changed, 'client/a.go\ncamunda.go\n');
@@ -142,4 +150,38 @@ test('globs match file names containing newlines', () => {
   assert.ok(matchGlob('*.py', 'x/a\nb.py'));
   const cfg = { ...GO, 'do-not-backport': [{ paths: ['scripts/gen/**'] }] };
   assert.equal(blockedFiles(cfg, { from: 'main', changed: readFileList('scripts/gen/evil\nname.py\0') }).length, 1);
+});
+
+test('post-cherry-pick is an optional non-empty command, usable without generated paths', () => {
+  assert.deepEqual(validateConfig({ ...GO, 'post-cherry-pick': './scripts/backport-adapt.sh' }), []);
+  assert.deepEqual(validateConfig({ 'generated-paths': [], 'post-cherry-pick': 'true' }), []);
+  assert.ok(validateConfig({ ...GO, 'post-cherry-pick': '' }).some((e) => /post-cherry-pick must be a non-empty string/.test(e)));
+  assert.ok(validateConfig({ ...GO, 'post-cherry-pick': ['x'] }).some((e) => /post-cherry-pick must be a non-empty string/.test(e)));
+  assert.equal(resolve({ ...GO, 'post-cherry-pick': 'adapt' }, { from: 'main', changed: [] }).postCherryPick, 'adapt');
+});
+
+// The adapt commit is hand-written code produced in the credential-free job, so it is
+// confined to files the cherry-pick itself changed, and never generated paths (the
+// regeneration commit owns those).
+test('adaptOutsideBackport: the adapt commit may only touch hand-written files the backport changed', () => {
+  const backport = ['camunda.go', 'worker_test.go', 'client/model_job.go'];
+  assert.deepEqual(adaptOutsideBackport(GO, ['camunda.go', 'worker_test.go'], backport), []);
+  assert.deepEqual(adaptOutsideBackport(GO, ['camunda.go', 'go.mod'], backport), ['go.mod']);
+  assert.deepEqual(adaptOutsideBackport(GO, ['client/model_job.go'], backport), ['client/model_job.go']);
+  assert.deepEqual(adaptOutsideBackport(GO, [' camunda.go'], backport), [' camunda.go'], 'names are compared byte for byte');
+});
+
+test('CLI: check-adapt', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'backport-config-'));
+  const cfg = join(dir, 'cfg.json');
+  writeFileSync(cfg, JSON.stringify(GO));
+  writeFileSync(join(dir, 'backport.txt'), 'camunda.go\0worker_test.go\0');
+  writeFileSync(join(dir, 'adapt.txt'), 'camunda.go\0');
+  const args = (adapt) => ['check-adapt', '--config', cfg, '--changed', join(dir, adapt), '--allowed', join(dir, 'backport.txt')];
+  assert.equal(run(args('adapt.txt')).code, 0);
+  writeFileSync(join(dir, 'adapt.txt'), 'camunda.go\0.github/workflows/ci.yml\0');
+  const r = run(args('adapt.txt'));
+  assert.equal(r.code, 1);
+  assert.match(r.err, /::error::\.github\/workflows\/ci\.yml is not a hand-written file this backport changes/);
+  assert.throws(() => run(['check-adapt', '--config', cfg, '--changed', join(dir, 'adapt.txt')]), /--allowed is required/);
 });

@@ -268,7 +268,10 @@ https://raw.githubusercontent.com/camunda/sdk-infra/refs/heads/main/policies/AGE
      - client
      - pb
      - facade_generated.go
-   regenerate: ./scripts/generate.sh   # must regenerate from the committed spec, not refetch it
+   # Must regenerate from the committed spec, not refetch it. Compile the tests too,
+   # so a backport that breaks only test files fails here rather than in CI.
+   regenerate: ./scripts/generate.sh && go vet ./...
+   # post-cherry-pick:          # optional: adapt hand-written code to the target branch (below)
    # do-not-backport:           # optional, e.g. C# stable/9 whose generator diverged
    #   - paths: [generator/**]
    #     from: [main]
@@ -285,6 +288,8 @@ https://raw.githubusercontent.com/camunda/sdk-infra/refs/heads/main/policies/AGE
          with: { distribution: temurin, java-version: '21' }
    ```
 
+
+   If backports need a mechanical edit to hand-written code on every stable line (Go: the module path's major version), add a `post-cherry-pick` command; see the README's backport section for the Go one.
 
 2. Commit `.github/backport.yml` (and `codegen-setup`) to **every live `stable/N`** as well as `main`: they are read from the target branch. Check that `regenerate` works offline from the committed spec on each line.
 3. Create a `backport stable/N` label for each live line.
