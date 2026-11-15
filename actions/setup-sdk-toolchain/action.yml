@@ -23,6 +23,14 @@ inputs:
       is a no-op, because dotnet, cargo and maven all restore implicitly on the first build.
     required: false
     default: 'true'
+  cache:
+    description: >-
+      Use the setup actions' dependency caches (npm, uv, Go modules and build cache,
+      Maven). Pass 'false' in a job that runs untrusted code (e.g. sdk-backport's
+      regeneration of a backport branch): a cache it saved would later be restored by
+      trusted workflows.
+    required: false
+    default: 'true'
   node-version:
     description: 'Node.js version. Node is installed for every language.'
     required: false
@@ -67,9 +75,12 @@ runs:
     - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
       with:
         node-version: ${{ inputs.node-version }}
+        package-manager-cache: ${{ inputs.cache == 'true' }}
 
     - if: inputs.language == 'python'
       uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+      with:
+        enable-cache: ${{ inputs.cache == 'true' }}
 
     # Not only for the python SDK: the go and rust Makefiles run
     # `python3 scripts/…` for their coverage and README-snippet checks, the
@@ -91,6 +102,7 @@ runs:
       uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
       with:
         go-version-file: go.mod
+        cache: ${{ inputs.cache == 'true' }}
 
     # rust-toolchain.toml pins the channel and the rustfmt/clippy components.
     # `rustup show` is the documented way to make rustup honour that file and
@@ -108,7 +120,7 @@ runs:
       with:
         distribution: ${{ inputs.java-distribution }}
         java-version: ${{ inputs.java-version }}
-        cache: maven
+        cache: ${{ inputs.cache == 'true' && 'maven' || '' }}
 
     - if: inputs.install-dependencies == 'true' && inputs.language == 'js'
       shell: bash
