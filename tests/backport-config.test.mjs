@@ -185,3 +185,16 @@ test('CLI: check-adapt', () => {
   assert.match(r.err, /::error::\.github\/workflows\/ci\.yml is not a hand-written file this backport changes/);
   assert.throws(() => run(['check-adapt', '--config', cfg, '--changed', join(dir, 'adapt.txt')]), /--allowed is required/);
 });
+
+// post-cherry-pick gets only the hand-written files: rewriting a generated file would
+// fail check-adapt, and regeneration replaces those anyway.
+test('CLI: hand-written prints the changed files outside generated-paths, NUL-separated', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'backport-config-'));
+  writeFileSync(join(dir, 'cfg.json'), JSON.stringify(GO));
+  writeFileSync(join(dir, 'changed.txt'), 'camunda.go\0facade_generated.go\0client/a.go\0docs/x\ny.md\0');
+  const r = run(['hand-written', '--config', join(dir, 'cfg.json'), '--changed', join(dir, 'changed.txt')]);
+  assert.equal(r.code, 0);
+  assert.equal(r.out, 'camunda.go\0docs/x\ny.md\0');
+  writeFileSync(join(dir, 'changed.txt'), 'client/a.go\0');
+  assert.equal(run(['hand-written', '--config', join(dir, 'cfg.json'), '--changed', join(dir, 'changed.txt')]).out, '');
+});

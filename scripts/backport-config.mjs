@@ -12,6 +12,9 @@
 //   node backport-config.mjs check-adapt --config cfg.json --changed adapt.txt --allowed backport.txt
 //     Exits 1 if the post-cherry-pick commit changes a file the backport doesn't, or
 //     a generated path.
+//   node backport-config.mjs hand-written --config cfg.json --changed files.txt
+//     Prints the changed files outside generated-paths, NUL-separated: the list
+//     post-cherry-pick gets as BACKPORT_CHANGED_FILES.
 //
 // All exit 2 (with `::error::` lines) when the config is invalid.
 
@@ -175,7 +178,7 @@ const readLines = (path) => readFileList(readFileSync(path, 'utf8'));
 
 export function main(argv, { stdout = process.stdout, stderr = process.stderr } = {}) {
   const { command, opts } = parseArgs(argv);
-  const commands = ['resolve', 'check-diff', 'check-adapt'];
+  const commands = ['resolve', 'check-diff', 'check-adapt', 'hand-written'];
   if (!commands.includes(command)) throw new Error(`unknown command: ${command} (expected ${commands.join(', ')})`);
   if (!opts.config) throw new Error('--config is required');
   if (command === 'check-adapt' && !opts.allowed) throw new Error('--allowed is required');
@@ -194,6 +197,10 @@ export function main(argv, { stdout = process.stdout, stderr = process.stderr } 
     const outside = outsideGenerated(config, changed);
     for (const f of outside) stderr.write(`::error::${f} is not a generated path\n`);
     return outside.length ? 1 : 0;
+  }
+  if (command === 'hand-written') {
+    for (const f of outsideGenerated(config, changed)) stdout.write(`${f}\0`);
+    return 0;
   }
   if (command === 'check-adapt') {
     const outside = adaptOutsideBackport(config, changed, readLines(opts.allowed));

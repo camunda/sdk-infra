@@ -189,6 +189,7 @@ test('sdk-backport runs the SDK generator without credentials and pushes only ve
   // The post-cherry-pick command runs here, without credentials, and its commit is
   // checked against the files the backport changes before anything is committed.
   assert.match(regen, /bash -c "\$adapt"/);
+  assert.match(regen, /BACKPORT_CHANGED_FILES="\$\{RUNNER_TEMP\}\/hand-written\.txt"/, 'only hand-written files are offered');
   assert.ok(regen.indexOf('check-adapt') < regen.indexOf('chore: adapt backport'), 'check before commit');
   // Committed conflict markers fail the backport on both paths, with and without regeneration.
   assert.equal((regen.match(/git grep -lE '\^\(<<<<<<<\|>>>>>>>\) ' HEAD/g) ?? []).length, 2);
@@ -202,7 +203,10 @@ test('sdk-backport runs the SDK generator without credentials and pushes only ve
   assert.match(pub, /done < <\(jq -r '\.\[\] \| "\\\(\.pr\) \\\(\.branch\) \\\(\.base\)"' <<< "\$PRS"\)/);
   assert.match(pub, /git merge-base --is-ancestor "origin\/\$\{branch\}" "\$sha"/);
   assert.match(pub, /mapfile -t actual < <\(git rev-list --reverse "origin\/\$\{branch\}\.\.\$\{sha\}"\)/);
-  assert.match(pub, /\[ "\$\{#expected\[@\]\}" = 0 \] \|\| \[ "\$\{actual\[\*\]\}" != "\$\{expected\[\*\]\}" \]/);
+  assert.match(pub, /\[ "\$\{#expected\[@\]\}" = 0 \] \|\| \[ "\$\{#actual\[@\]\}" != "\$\{#expected\[@\]\}" \] \|\| \[ "\$\{actual\[\*\]\}" != "\$\{expected\[\*\]\}" \]/);
+  assert.match(pub, /\[\[ "\$c" =~ \^\[0-9a-f\]\{40\}\$ \]\] \|\| \{ echo [^\n]*return 1; \}$/m, 'each reported commit is one full id');
+  // A failed diff yields an empty list that passes the path checks, so it must stop the push.
+  for (const m of pub.matchAll(/git diff -z[^\n]*/g)) assert.match(m[0], /\|\| return 1$/, m[0]);
   assert.match(pub, /if ! node \.sdk-infra\/scripts\/backport-config\.mjs check-adapt[^\n]*\\\n[^\n]*; then\n[^\n]*\n\s*return 1\n/);
   assert.ok(pub.indexOf('check-adapt') < pub.indexOf('git push'), 'the adapt check must precede the push');
   assert.match(pub, /if ! node \.sdk-infra\/scripts\/backport-config\.mjs check-diff[^\n]*; then\n[^\n]*\n\s*return 1\n/);

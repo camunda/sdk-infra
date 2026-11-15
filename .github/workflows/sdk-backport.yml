@@ -415,14 +415,18 @@ jobs:
           # Branch-specific changes to hand-written code (e.g. Go's major-version module
           # path), committed on their own. Confined to the files the backport changes.
           if [ -n "$adapt" ]; then
+            # The command gets only the hand-written files: it may not touch generated ones.
+            node .sdk-infra/scripts/backport-config.mjs hand-written --config "${RUNNER_TEMP}/backport.json" \
+              --changed "${RUNNER_TEMP}/changed.txt" > "${RUNNER_TEMP}/hand-written.txt" || { status failed "could not list the hand-written files"; exit 1; }
             echo "Running post-cherry-pick: ${adapt}"
-            if ! BACKPORT_BASE="$BASE" BACKPORT_SOURCE_BASE="$SOURCE_BASE" BACKPORT_CHANGED_FILES="${RUNNER_TEMP}/changed.txt" \
+            if ! BACKPORT_BASE="$BASE" BACKPORT_SOURCE_BASE="$SOURCE_BASE" BACKPORT_CHANGED_FILES="${RUNNER_TEMP}/hand-written.txt" \
                 bash -c "$adapt"; then
               status failed "the \`post-cherry-pick\` command \`${adapt}\` failed on \`${BASE}\`"
               exit 1
             fi
-            git add -A -- .
-            git diff --cached -z --no-renames --name-only HEAD > "${RUNNER_TEMP}/adapt.txt"
+            # A failed listing would be an empty list, which passes check-adapt.
+            git add -A -- . || { status failed "could not stage the post-cherry-pick changes"; exit 1; }
+            git diff --cached -z --no-renames --name-only HEAD > "${RUNNER_TEMP}/adapt.txt" || { status failed "could not list the post-cherry-pick changes"; exit 1; }
             if ! node .sdk-infra/scripts/backport-config.mjs check-adapt --config "${RUNNER_TEMP}/backport.json" \
                 --changed "${RUNNER_TEMP}/adapt.txt" --allowed "${RUNNER_TEMP}/changed.txt"; then
               status failed "the \`post-cherry-pick\` command changed files outside the backport (see the run log); it may only change hand-written files the backport already changes"
@@ -614,16 +618,21 @@ jobs:
             # order, directly on top of the branch. Each is checked against its own rule.
             adapt_sha=$(jq -r '.adaptSha // ""' "${dir}/status.json")
             regen_sha=$(jq -r '.regenSha // ""' "${dir}/status.json")
+            # Each reported field must be one full commit id: the comparison below joins
+            # the arrays, so "A B" in one field would otherwise pass as two commits.
             expected=()
-            [ -n "$adapt_sha" ] && expected+=("$adapt_sha")
-            [ -n "$regen_sha" ] && expected+=("$regen_sha")
+            for c in "$adapt_sha" "$regen_sha"; do
+              [ -z "$c" ] && continue
+              [[ "$c" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::#${pr}: the status reports an invalid commit id."; return 1; }
+              expected+=("$c")
+            done
             mapfile -t actual < <(git rev-list --reverse "origin/${branch}..${sha}")
             if [ "$(git rev-parse "origin/${branch}")" != "$(jq -r .branchSha "${dir}/status.json")" ] \
                 || ! git merge-base --is-ancestor "origin/${branch}" "$sha"; then
               comment "$pr" "The regenerated code was not pushed: \`${branch}\` moved while it was being regenerated. Comment \`/backport\` on #${SOURCE_PR} to retry. ([run](${RUN_URL}))"
               return 1
             fi
-            if [ "${#expected[@]}" = 0 ] || [ "${actual[*]}" != "${expected[*]}" ] \
+            if [ "${#expected[@]}" = 0 ] || [ "${#actual[@]}" != "${#expected[@]}" ] || [ "${actual[*]}" != "${expected[*]}" ] \
                 || [ "$(git rev-parse "${actual[0]}^")" != "$(git rev-parse "origin/${branch}")" ]; then
               echo "::error::#${pr}: the bundle's commits (${actual[*]}) are not the reported adapt and regeneration commits (${expected[*]}); not pushing."
               return 1
@@ -631,8 +640,9 @@ jobs:
             git show "origin/${base}:.github/backport.yml" | yq -o=json '.' > "${RUNNER_TEMP}/cfg-${pr}.json" || return 1
             parent="origin/${branch}"
             if [ -n "$adapt_sha" ]; then
-              git diff -z --no-renames --name-only "origin/${base}...origin/${branch}" > "${RUNNER_TEMP}/backport-${pr}.txt"
-              git diff -z --no-renames --name-only "$parent" "$adapt_sha" > "${RUNNER_TEMP}/adapt-${pr}.txt"
+              # A failed diff would be an empty list, which passes the checks: stop instead.
+              git diff -z --no-renames --name-only "origin/${base}...origin/${branch}" > "${RUNNER_TEMP}/backport-${pr}.txt" || return 1
+              git diff -z --no-renames --name-only "$parent" "$adapt_sha" > "${RUNNER_TEMP}/adapt-${pr}.txt" || return 1
               if ! node .sdk-infra/scripts/backport-config.mjs check-adapt --config "${RUNNER_TEMP}/cfg-${pr}.json" \
                   --changed "${RUNNER_TEMP}/adapt-${pr}.txt" --allowed "${RUNNER_TEMP}/backport-${pr}.txt"; then
                 echo "::error::#${pr}: the adapt commit touches files outside the backport; not pushing."
@@ -641,7 +651,7 @@ jobs:
               parent="$adapt_sha"
             fi
             if [ -n "$regen_sha" ]; then
-              git diff -z --no-renames --name-only "$parent" "$regen_sha" > "${RUNNER_TEMP}/diff-${pr}.txt"
+              git diff -z --no-renames --name-only "$parent" "$regen_sha" > "${RUNNER_TEMP}/diff-${pr}.txt" || return 1
               if ! node .sdk-infra/scripts/backport-config.mjs check-diff --config "${RUNNER_TEMP}/cfg-${pr}.json" --changed "${RUNNER_TEMP}/diff-${pr}.txt"; then
                 echo "::error::#${pr}: the regeneration commit touches non-generated paths; not pushing."
                 return 1
