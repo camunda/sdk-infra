@@ -246,6 +246,24 @@ post-cherry-pick: |
 
 **Conflicts.** When the cherry-pick conflicts, korthout/backport-action commits the conflict markers as ` BACKPORT-CONFLICT`, which commitlint rejects. The workflow rewords that commit to the source PR's title (only the message changes) and comments on the backport PR with the conflicted files. Resolve them on the backport branch, then comment `/backport` on the source PR to adapt and regenerate it.
 
+A conflict doesn't always show markers. If the source changes a file that doesn't exist on the target yet (a modify/delete conflict), the action commits `main`'s **whole file**. The backport PR then looks clean but is a draft, and it carries code from other PRs that haven't been backported. Treat every draft backport PR as conflicted.
+
+**Merging backports: dependent fixes.** Each backport is cut from the target branch as it is when the source PR merges. If fix B on `main` builds on fix A, and B's backport is cut before A's backport lands on `stable/N`, B's backport either conflicts (it is a draft) or fails CI because it lacks A. To avoid this:
+
+1. Merge backport PRs in the order their source PRs merged on `main`.
+2. Once A's backport is on `stable/N`, rebuild B's backport instead of resolving it by hand:
+
+   ```bash
+   git fetch origin
+   git switch -C backport-<B>-to-stable/N origin/stable/N
+   git cherry-pick -x <B's merge commit on main>
+   git push --force-with-lease=backport-<B>-to-stable/N:<old head> origin backport-<B>-to-stable/N
+   ```
+
+   Don't build or adapt it by hand: the branch still carries `main`'s generated code. Comment `/backport` on B's source PR, which runs `post-cherry-pick` and regenerates. Mark the PR ready once its CI passes on the result.
+
+Automating both steps (auto-merging clean backports, and rebuilding drafted ones when the target branch moves) is tracked in camunda/sdk-infra#110.
+
 PRs from forks get no secrets on `pull_request`; backport those with a `/backport` comment.
 
 ### 9. Shared configs
