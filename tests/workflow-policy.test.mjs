@@ -253,6 +253,20 @@ test('sdk-backport sets up the toolchain without caches', () => {
   assert.match(step, /cache: 'false'/);
 });
 
+// Only generated-paths are staged. A file the generator writes outside them (a path
+// missing from the config, or a new file such as a per-tag example) would otherwise be
+// left behind unstaged, and the backport would publish the source branch's copy.
+test('sdk-backport fails the regeneration when it changes files outside generated-paths', () => {
+  const text = code(read('sdk-backport.yml'));
+  const staged = text.indexOf('git add -A -- "${existing[@]}"');
+  assert.ok(staged > 0, 'the generated paths are staged');
+  const after = text.slice(staged);
+  const check = /stray=\$\(git status --porcelain --untracked-files=all[ |)]/.exec(after);
+  assert.ok(check, 'after staging, the remaining working-tree changes are listed');
+  assert.ok(check.index < after.indexOf('git commit -q -m "chore(gen)'), 'checked before the regeneration commit');
+  assert.match(after.slice(check.index), /^\s+if \[ -n "\$stray" \]; then\n[^\n]*status failed [^\n]*generated-paths[^\n]*\n\s+exit 1/m);
+});
+
 test('setup-sdk-toolchain turns off every cache when cache is false', () => {
   const action = readFileSync(new URL('../actions/setup-sdk-toolchain/action.yml', import.meta.url), 'utf8');
   assert.match(action, /\n  cache:\n/, 'cache input');
