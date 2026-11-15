@@ -24,7 +24,7 @@
     "post-cherry-pick": {
       "type": "string",
       "minLength": 1,
-      "description": "Optional shell command, run from the repo root with bash after the cherry-pick and before regeneration, that adapts hand-written code to the target branch (e.g. rewriting Go's major-version module path in imports). Its changes are committed separately as `chore: adapt backport of #N to <target>`. It may only change files the backport itself changes, and no generated paths; anything else fails the backport. Environment: BACKPORT_BASE (target branch), BACKPORT_SOURCE_BASE (the source PR's base branch, also fetched as origin/<it>), BACKPORT_CHANGED_FILES (path to a NUL-separated list of the hand-written files the backport changes, generated paths excluded)."
+      "description": "Optional shell command, run from the repo root with bash after the cherry-pick and before regeneration, that adapts hand-written code to the target branch (e.g. rewriting Go's major-version module path in imports). Its changes are committed separately as `chore: adapt backport of #N to <target>`. It may only change files the backport itself changes, and no generated paths; anything else fails the backport. Environment: BACKPORT_BASE (target branch), BACKPORT_SOURCE_BASE (the source PR's base branch), BACKPORT_SOURCE_COMMIT (the source PR's merge commit: read the source side's state, such as its go.mod, from it rather than from the base branch, which may have moved on), BACKPORT_CHANGED_FILES (path to a NUL-separated list of the hand-written files the backport changes, generated paths excluded)."
     },
     "do-not-backport": {
       "type": "array",

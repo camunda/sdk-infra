@@ -127,6 +127,7 @@ jobs:
       prs: ${{ steps.prs.outputs.prs }}
       source-pr: ${{ steps.prs.outputs.source-pr }}
       source-base: ${{ steps.prs.outputs.source-base }}
+      source-commit: ${{ steps.prs.outputs.source-commit }}
       was-successful: ${{ steps.backport.outputs.was_successful }}
       by-target: ${{ steps.backport.outputs.was_successful_by_target }}
     steps:
@@ -228,6 +229,10 @@ jobs:
         run: |
           set -euo pipefail
           source_base=$(gh pr view "$SOURCE_PR" --repo "$GITHUB_REPOSITORY" --json baseRefName -q .baseRefName)
+          # The merged commit on the source base: post-cherry-pick reads the source
+          # side's state from it, since the base branch may have moved on (e.g. to a new
+          # major version) by the time someone comments /backport.
+          source_commit=$(gh pr view "$SOURCE_PR" --repo "$GITHUB_REPOSITORY" --json mergeCommit -q '.mergeCommit.oid // ""')
           prefix="${BRANCH_TEMPLATE%%\$\{target_branch\}}"
           prefix="${prefix//\$\{pull_number\}/$SOURCE_PR}"
           prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --author app/camunda-sdk-automation \
@@ -240,6 +245,7 @@ jobs:
             echo "prs=${prs}"
             echo "source-pr=${SOURCE_PR}"
             echo "source-base=${source_base}"
+            echo "source-commit=${source_commit}"
           } >> "$GITHUB_OUTPUT"
 
       # korthout commits a conflicted cherry-pick as " BACKPORT-CONFLICT", which no
@@ -293,6 +299,7 @@ jobs:
       BASE: ${{ matrix.base }}
       SOURCE_PR: ${{ needs.backport.outputs.source-pr }}
       SOURCE_BASE: ${{ needs.backport.outputs.source-base }}
+      SOURCE_COMMIT: ${{ needs.backport.outputs.source-commit }}
     steps:
       - name: Check out the backport branch
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -418,8 +425,14 @@ jobs:
             # The command gets only the hand-written files: it may not touch generated ones.
             node .sdk-infra/scripts/backport-config.mjs hand-written --config "${RUNNER_TEMP}/backport.json" \
               --changed "${RUNNER_TEMP}/changed.txt" > "${RUNNER_TEMP}/hand-written.txt" || { status failed "could not list the hand-written files"; exit 1; }
+            # The full clone has every branch, so the source PR's merge commit is local.
+            if ! { [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] && git cat-file -e "${SOURCE_COMMIT}^{commit}"; }; then
+              status failed "the merge commit of #${SOURCE_PR} (\`${SOURCE_COMMIT}\`) is not available, so \`post-cherry-pick\` cannot run"
+              exit 1
+            fi
             echo "Running post-cherry-pick: ${adapt}"
-            if ! BACKPORT_BASE="$BASE" BACKPORT_SOURCE_BASE="$SOURCE_BASE" BACKPORT_CHANGED_FILES="${RUNNER_TEMP}/hand-written.txt" \
+            if ! BACKPORT_BASE="$BASE" BACKPORT_SOURCE_BASE="$SOURCE_BASE" BACKPORT_SOURCE_COMMIT="$SOURCE_COMMIT" \
+                BACKPORT_CHANGED_FILES="${RUNNER_TEMP}/hand-written.txt" \
                 bash -c "$adapt"; then
               status failed "the \`post-cherry-pick\` command \`${adapt}\` failed on \`${BASE}\`"
               exit 1

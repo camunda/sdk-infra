@@ -190,6 +190,9 @@ test('sdk-backport runs the SDK generator without credentials and pushes only ve
   // checked against the files the backport changes before anything is committed.
   assert.match(regen, /bash -c "\$adapt"/);
   assert.match(regen, /BACKPORT_CHANGED_FILES="\$\{RUNNER_TEMP\}\/hand-written\.txt"/, 'only hand-written files are offered');
+  // The hook reads the source PR's own merge commit, not its base branch's moving tip.
+  assert.match(regen, /BACKPORT_SOURCE_COMMIT="\$SOURCE_COMMIT"/);
+  assert.match(regen, /\[\[ "\$SOURCE_COMMIT" =~ \^\[0-9a-f\]\{40\}\$ \]\] && git cat-file -e "\$\{SOURCE_COMMIT\}\^\{commit\}"/);
   assert.ok(regen.indexOf('check-adapt') < regen.indexOf('chore: adapt backport'), 'check before commit');
   // Committed conflict markers fail the backport on both paths, with and without regeneration.
   assert.equal((regen.match(/git grep -lE '\^\(<<<<<<<\|>>>>>>>\) ' HEAD/g) ?? []).length, 2);
