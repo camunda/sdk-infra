@@ -261,5 +261,5 @@ test('setup-sdk-toolchain turns off every cache when cache is false', () => {
   assert.match(byAction['actions/setup-node'], /package-manager-cache: \$\{\{ inputs\.cache == 'true' \}\}/);
   assert.match(byAction['actions/setup-go'], /cache: \$\{\{ inputs\.cache == 'true' \}\}/);
   assert.match(byAction['actions/setup-java'], /cache: \$\{\{ inputs\.cache == 'true' && 'maven' \|\| '' \}\}/);
-  assert.match(byAction['astral-sh/setup-uv'], /enable-cache: \$\{\{ inputs\.cache == 'true' \}\}/);
+  assert.match(byAction['astral-sh/setup-uv'], /enable-cache: \$\{\{ inputs\.cache == 'true' && 'auto' \|\| 'false' \}\}/);
 });
