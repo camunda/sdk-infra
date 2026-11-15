@@ -186,17 +186,34 @@ test('sdk-backport runs the SDK generator without credentials and pushes only ve
   assert.match(regen, /cfg=\.backport-base\/\.github\/backport\.yml/);
   assert.match(regen, /uses: \.\/\.backport-base\/\.github\/actions\/codegen-setup/);
 
+  // The post-cherry-pick command runs here, without credentials, and its commit is
+  // checked against the files the backport changes before anything is committed.
+  assert.match(regen, /bash -c "\$adapt"/);
+  assert.match(regen, /BACKPORT_CHANGED_FILES="\$\{RUNNER_TEMP\}\/hand-written\.txt"/, 'only hand-written files are offered');
+  // The hook reads the source PR's own merge commit, not its base branch's moving tip.
+  assert.match(regen, /BACKPORT_SOURCE_COMMIT="\$SOURCE_COMMIT"/);
+  assert.match(regen, /\[\[ "\$SOURCE_COMMIT" =~ \^\[0-9a-f\]\{40\}\$ \]\] && git cat-file -e "\$\{SOURCE_COMMIT\}\^\{commit\}"/);
+  assert.ok(regen.indexOf('check-adapt') < regen.indexOf('chore: adapt backport'), 'check before commit');
   // Committed conflict markers fail the backport on both paths, with and without regeneration.
   assert.equal((regen.match(/git grep -lE '\^\(<<<<<<<\|>>>>>>>\) ' HEAD/g) ?? []).length, 2);
   // Nothing checks out the source PR's head; korthout cherry-picks the merged commit.
   assert.doesNotMatch(text, /github\.event\.pull_request\.head/);
 
   // publish takes the PR list from the backport job and pushes a bundle only as a
-  // single-commit fast-forward that touches generated paths alone.
+  // fast-forward of exactly the reported adapt and regeneration commits, each
+  // checked against its own rule.
   const pub = jobs.publish;
   assert.match(pub, /done < <\(jq -r '\.\[\] \| "\\\(\.pr\) \\\(\.branch\) \\\(\.base\)"' <<< "\$PRS"\)/);
   assert.match(pub, /git merge-base --is-ancestor "origin\/\$\{branch\}" "\$sha"/);
-  assert.match(pub, /rev-list --count "origin\/\$\{branch\}\.\.\$\{sha\}"\)" != 1/);
+  assert.match(pub, /mapfile -t actual < <\(git rev-list --reverse "origin\/\$\{branch\}\.\.\$\{sha\}"\)/);
+  assert.match(pub, /\[ "\$\{#expected\[@\]\}" = 0 \] \|\| \[ "\$\{#actual\[@\]\}" != "\$\{#expected\[@\]\}" \] \|\| \[ "\$\{actual\[\*\]\}" != "\$\{expected\[\*\]\}" \]/);
+  assert.match(pub, /\[\[ "\$c" =~ \^\[0-9a-f\]\{40\}\$ \]\] \|\| \{ echo [^\n]*return 1; \}$/m, 'each reported commit is one full id');
+  // A failed diff yields an empty list that passes the path checks, so it must stop the push.
+  for (const m of pub.matchAll(/git diff -z[^\n]*/g)) assert.match(m[0], /\|\| return 1$/, m[0]);
+  assert.match(pub, /if ! node \.sdk-infra\/scripts\/backport-config\.mjs check-adapt[^\n]*\\\n[^\n]*; then\n[^\n]*\n\s*return 1\n/);
+  assert.ok(pub.indexOf('check-adapt') < pub.indexOf('git push'), 'the adapt check must precede the push');
+  // An adapt commit is only accepted when the target's own config enables the hook.
+  assert.match(pub, /if \[ -n "\$adapt_sha" \] && \[ -z "\$\(jq -r '\.\["post-cherry-pick"\] \/\/ ""' "\$\{RUNNER_TEMP\}\/cfg-\$\{pr\}\.json"\)" \]; then\n[^\n]*\n\s*return 1\n/);
   assert.match(pub, /if ! node \.sdk-infra\/scripts\/backport-config\.mjs check-diff[^\n]*; then\n[^\n]*\n\s*return 1\n/);
   assert.ok(pub.indexOf('check-diff') < pub.indexOf('git push'), 'the diff check must precede the push');
   // Every backport PR the publish step did not report on gets a comment from a step
@@ -204,6 +221,16 @@ test('sdk-backport runs the SDK generator without credentials and pushes only ve
   assert.match(pub, /- name: Report unpublished backports\n\s+if: always\(\) && env\.PRS != '\[\]'\n\s+env:\n\s+GH_TOKEN: \$\{\{ github\.token \}\}/);
   assert.match(pub, /grep -qx "\$pr" "\$reported" \|\| comment "\$pr"/, 'a failure without its own comment must be reported');
   assert.doesNotMatch(pub, /bash -c|\.\/scripts\/|codegen-setup|setup-sdk-toolchain/, 'publish must not run repo code');
+});
+
+test('sdk-backport rewords conflict commits only with a lease, in the backport job', () => {
+  const text = code(read('sdk-backport.yml'));
+  const step = /- name: Reword conflict commits\n[\s\S]*?(?=\n  [a-z]+:\n|\n      - name: )/.exec(text)?.[0];
+  assert.ok(step, 'the reword step exists');
+  assert.ok(text.indexOf('Reword conflict commits') < text.indexOf('\n  regenerate:\n'), 'it runs before regeneration');
+  assert.match(step, /\[\[ "\$subject" =~ \^\[\[:space:\]\]\*BACKPORT-CONFLICT\[\[:space:\]\]\*\$ \]\] \|\| continue/);
+  assert.match(step, /git push -q --force-with-lease="refs\/heads\/\$\{branch\}:\$\{old\}"/);
+  assert.doesNotMatch(step, /git push[^\n]*(--force(?!-with-lease)|\s-f\s)/, 'never a plain force push');
 });
 
 test('sdk-backport only lets people with write access trigger a backport', () => {

@@ -6,17 +6,23 @@
 // adds no runtime dependency. See schema/backport.schema.json.
 //
 //   node backport-config.mjs resolve --config cfg.json --from main --to stable/10 --changed files.txt
-//     Prints { language, generatedPaths, regenerate, blocked[] } as JSON.
+//     Prints { language, generatedPaths, regenerate, postCherryPick, blocked[] } as JSON.
 //   node backport-config.mjs check-diff --config cfg.json --changed files.txt
 //     Exits 1 if any changed file lies outside generated-paths.
+//   node backport-config.mjs check-adapt --config cfg.json --changed adapt.txt --allowed backport.txt
+//     Exits 1 if the post-cherry-pick commit changes a file the backport doesn't, or
+//     a generated path.
+//   node backport-config.mjs hand-written --config cfg.json --changed files.txt
+//     Prints the changed files outside generated-paths, NUL-separated: the list
+//     post-cherry-pick gets as BACKPORT_CHANGED_FILES.
 //
-// Both exit 2 (with `::error::` lines) when the config is invalid.
+// All exit 2 (with `::error::` lines) when the config is invalid.
 
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 export const LANGUAGES = ['js', 'python', 'csharp', 'go', 'rust', 'java'];
-const KEYS = ['language', 'generated-paths', 'regenerate', 'do-not-backport'];
+const KEYS = ['language', 'generated-paths', 'regenerate', 'post-cherry-pick', 'do-not-backport'];
 const RULE_KEYS = ['paths', 'from', 'reason'];
 
 /**
@@ -91,6 +97,9 @@ export function validateConfig(config) {
     }
   }
   if ('regenerate' in config && typeof config.regenerate !== 'string') errors.push('regenerate must be a string');
+  if ('post-cherry-pick' in config && !(typeof config['post-cherry-pick'] === 'string' && config['post-cherry-pick'].trim())) {
+    errors.push('post-cherry-pick must be a non-empty string (the command), or omitted');
+  }
   const rules = config['do-not-backport'];
   if (rules !== undefined) {
     if (!Array.isArray(rules)) {
@@ -131,6 +140,7 @@ export function resolve(config, { from, changed }) {
     language: config.language ?? '',
     generatedPaths: config['generated-paths'],
     regenerate: config.regenerate ?? '',
+    postCherryPick: config['post-cherry-pick'] ?? '',
     blocked: blockedFiles(config, { from, changed }),
   };
 }
@@ -138,6 +148,16 @@ export function resolve(config, { from, changed }) {
 /** Changed files outside generated-paths: a regeneration commit must not touch them. */
 export function outsideGenerated(config, changed) {
   return changed.filter((f) => !isGenerated(config['generated-paths'], f));
+}
+
+/**
+ * Files the post-cherry-pick commit changes that it may not: anything the backport
+ * itself doesn't change, and any generated path (the regeneration commit owns those).
+ * Names are compared byte for byte.
+ */
+export function adaptOutsideBackport(config, changed, backportChanged) {
+  const allowed = new Set(backportChanged);
+  return changed.filter((f) => !allowed.has(f) || isGenerated(config['generated-paths'], f));
 }
 
 function parseArgs(argv) {
@@ -158,8 +178,10 @@ const readLines = (path) => readFileList(readFileSync(path, 'utf8'));
 
 export function main(argv, { stdout = process.stdout, stderr = process.stderr } = {}) {
   const { command, opts } = parseArgs(argv);
-  if (!['resolve', 'check-diff'].includes(command)) throw new Error(`unknown command: ${command} (expected resolve or check-diff)`);
+  const commands = ['resolve', 'check-diff', 'check-adapt', 'hand-written'];
+  if (!commands.includes(command)) throw new Error(`unknown command: ${command} (expected ${commands.join(', ')})`);
   if (!opts.config) throw new Error('--config is required');
+  if (command === 'check-adapt' && !opts.allowed) throw new Error('--allowed is required');
   const config = JSON.parse(readFileSync(opts.config, 'utf8') || 'null');
   const errors = validateConfig(config);
   if (errors.length) {
@@ -174,6 +196,15 @@ export function main(argv, { stdout = process.stdout, stderr = process.stderr } 
   if (command === 'check-diff') {
     const outside = outsideGenerated(config, changed);
     for (const f of outside) stderr.write(`::error::${f} is not a generated path\n`);
+    return outside.length ? 1 : 0;
+  }
+  if (command === 'hand-written') {
+    for (const f of outsideGenerated(config, changed)) stdout.write(`${f}\0`);
+    return 0;
+  }
+  if (command === 'check-adapt') {
+    const outside = adaptOutsideBackport(config, changed, readLines(opts.allowed));
+    for (const f of outside) stderr.write(`::error::${f} is not a hand-written file this backport changes\n`);
     return outside.length ? 1 : 0;
   }
   return 2;
