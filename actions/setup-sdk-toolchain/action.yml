@@ -80,7 +80,8 @@ runs:
     - if: inputs.language == 'python'
       uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
       with:
-        enable-cache: ${{ inputs.cache == 'true' }}
+        # 'auto' is setup-uv's own default (no remote cache on self-hosted runners).
+        enable-cache: ${{ inputs.cache == 'true' && 'auto' || 'false' }}
 
     # Not only for the python SDK: the go and rust Makefiles run
     # `python3 scripts/…` for their coverage and README-snippet checks, the
