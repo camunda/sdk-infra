@@ -161,3 +161,58 @@ test('user-controlled event text is only ever bound to an env var', () => {
   assert.ok(seen > 0, 'expected at least one env binding of event text');
   assert.deepEqual(offenders, [], `event text expanded outside an env binding:\n${offenders.join('\n')}`);
 });
+
+test('sdk-backport runs the SDK generator without credentials and pushes only verified bundles', () => {
+  const text = code(read('sdk-backport.yml'));
+  const jobsAt = text.indexOf('\njobs:\n');
+  const jobs = Object.fromEntries(
+    text
+      .slice(jobsAt + '\njobs:\n'.length)
+      .split(/\n(?=  [A-Za-z_][A-Za-z0-9_-]*:[ \t]*\n)/)
+      .map((j) => [/^  ([A-Za-z0-9_-]+):/.exec(j)[1], j]),
+  );
+  assert.deepEqual(Object.keys(jobs), ['backport', 'regenerate', 'publish']);
+
+  // The generator is repo code from the cherry-picked branch: no OIDC token, no secrets,
+  // no persisted git credentials, and a read-only GITHUB_TOKEN.
+  const regen = jobs.regenerate;
+  assert.match(regen, /\n    permissions:\n      contents: read\n(?!      \S)/, 'regenerate must be contents: read only');
+  assert.doesNotMatch(regen, /id-token|secrets\.|app-token|vault-action/);
+  const checkouts = regen.match(/uses: actions\/checkout@[\s\S]*?(?=\n      - |$)/g) ?? [];
+  assert.ok(checkouts.length >= 3);
+  for (const c of checkouts) assert.match(c, /persist-credentials: false/);
+  // Configuration and setup come from the target branch, never from the backport branch.
+  assert.match(regen, /ref: \$\{\{ matrix\.base \}\}\n\s+path: \.backport-base/);
+  assert.match(regen, /cfg=\.backport-base\/\.github\/backport\.yml/);
+  assert.match(regen, /uses: \.\/\.backport-base\/\.github\/actions\/codegen-setup/);
+
+  // Committed conflict markers fail the backport on both paths, with and without regeneration.
+  assert.equal((regen.match(/git grep -lE '\^\(<<<<<<<\|>>>>>>>\) ' HEAD/g) ?? []).length, 2);
+  // Nothing checks out the source PR's head; korthout cherry-picks the merged commit.
+  assert.doesNotMatch(text, /github\.event\.pull_request\.head/);
+
+  // publish takes the PR list from the backport job and pushes a bundle only as a
+  // single-commit fast-forward that touches generated paths alone.
+  const pub = jobs.publish;
+  assert.match(pub, /done < <\(jq -r '\.\[\] \| "\\\(\.pr\) \\\(\.branch\) \\\(\.base\)"' <<< "\$PRS"\)/);
+  assert.match(pub, /git merge-base --is-ancestor "origin\/\$\{branch\}" "\$sha"/);
+  assert.match(pub, /rev-list --count "origin\/\$\{branch\}\.\.\$\{sha\}"\)" != 1/);
+  assert.match(pub, /if ! node \.sdk-infra\/scripts\/backport-config\.mjs check-diff[^\n]*; then\n[^\n]*\n\s*return 1\n/);
+  assert.ok(pub.indexOf('check-diff') < pub.indexOf('git push'), 'the diff check must precede the push');
+  // Every backport PR the publish step did not report on gets a comment from a step
+  // that does not depend on Vault, the App token or the publish step succeeding.
+  assert.match(pub, /- name: Report unpublished backports\n\s+if: always\(\) && env\.PRS != '\[\]'\n\s+env:\n\s+GH_TOKEN: \$\{\{ github\.token \}\}/);
+  assert.match(pub, /grep -qx "\$pr" "\$reported" \|\| comment "\$pr"/, 'a failure without its own comment must be reported');
+  assert.doesNotMatch(pub, /bash -c|\.\/scripts\/|codegen-setup|setup-sdk-toolchain/, 'publish must not run repo code');
+});
+
+test('sdk-backport only lets people with write access trigger a backport', () => {
+  const text = code(read('sdk-backport.yml'));
+  assert.match(text, /contains\(fromJSON\('\["OWNER","MEMBER","COLLABORATOR"\]'\), github\.event\.comment\.author_association\)/);
+  assert.match(text, /github\.event\.pull_request\.merged/);
+  assert.match(
+    text,
+    /case "\$role" in\n\s*admin\|maintain\|write\)[^\n]*;;\n\s*\*\)\n(?:(?!;;)[\s\S])*?\n\s*exit 1\n/,
+    'anyone without write access must fail the run',
+  );
+});

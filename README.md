@@ -153,7 +153,69 @@ jobs:
     uses: camunda/sdk-infra/.github/workflows/sdk-issue-labels.yml@v1
 ```
 
-### 8. Shared configs
+### 8. Backport with regeneration (reusable workflow)
+
+SDK repos commit generated code and squash-merge, so cherry-picking a fix from `main` onto `stable/N` would carry generated code built from `main`'s newer spec. `sdk-backport.yml` backports the commit and then regenerates on the target branch. Design: camunda/orchestration-cluster-api-js#649, camunda/sdk-infra#81.
+
+```yaml
+# .github/workflows/backport.yml
+name: Backport
+on:
+  pull_request:
+    types: [closed, labeled]
+  issue_comment:
+    types: [created]
+permissions: {}
+concurrency:
+  group: backport-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: false
+jobs:
+  backport:
+    permissions:
+      contents: read
+      id-token: write        # Vault JWT for the App key
+      pull-requests: write  # failure comments when the App token is unavailable
+    uses: camunda/sdk-infra/.github/workflows/sdk-backport.yml@v1
+    secrets:
+      VAULT_ADDR: ${{ secrets.VAULT_ADDR }}
+      VAULT_JWT_PATH: ${{ secrets.VAULT_JWT_PATH }}
+      VAULT_JWT_ROLE: ${{ secrets.VAULT_JWT_ROLE }}
+      VAULT_JWT_AUDIENCE: ${{ secrets.VAULT_JWT_AUDIENCE }}
+```
+
+```yaml
+# .github/backport.yml (commit it to main AND to every stable/N it should apply to)
+language: go                 # optional: runs actions/setup-sdk-toolchain
+generated-paths:             # restored from the target branch, then regenerated
+  - external-spec
+  - client
+  - pb
+  - facade_generated.go
+regenerate: ./scripts/generate.sh   # must regenerate from the committed spec, not refetch it
+# do-not-backport:           # optional, e.g. C# stable/9 whose generator diverged
+#   - paths: [generator/**]
+#     from: [main]
+#     reason: the stable/9 generator diverged from main
+```
+
+```yaml
+# .github/actions/codegen-setup/action.yml (optional: setup the toolchain action lacks)
+name: Codegen setup
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-java@<sha> # vX.Y.Z
+      with: { distribution: temurin, java-version: '21' }
+```
+
+
+Label a merged PR `backport stable/10` (labelling after the merge works too), or comment `/backport` on it. For each label, the workflow opens a backport PR as `camunda-sdk-automation` (so the target branch's required CI runs) with the whole commit cherry-picked: hand-written code, infra and generator changes. On each backport branch it then restores `generated-paths` from the target branch, runs `regenerate` there, and pushes the result as a separate `chore(gen): regenerate for backport of #N` commit. That replaces main's generated output and clears cherry-pick conflicts in generated files.
+
+`.github/backport.yml` and `.github/actions/codegen-setup` are read from the **target** branch, so each stable line describes its own generator; a target branch without the config gets a failure comment rather than a guess (schema: [schema/backport.schema.json](schema/backport.schema.json)). The regeneration runs with a read-only token and no secrets; a separate job pushes its commit only if it is a fast-forward of the backport branch that touches nothing but generated paths. Failures (conflicts in hand-written code, a regeneration that fails because the change needs spec the target lacks, a `do-not-backport` hit) are reported as comments on the backport PR.
+
+PRs from forks get no secrets on `pull_request`; backport those with a `/backport` comment.
+
+### 9. Shared configs
 
 ```js
 // commitlint.config.cjs
