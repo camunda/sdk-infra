@@ -243,3 +243,23 @@ test('sdk-backport only lets people with write access trigger a backport', () =>
     'anyone without write access must fail the run',
   );
 });
+
+// The backport's regenerate job runs code from the backport branch. A cache it saves
+// would be restored by trusted workflows later, so its toolchain must not cache.
+test('sdk-backport sets up the toolchain without caches', () => {
+  const text = code(read('sdk-backport.yml'));
+  const step = /uses: \.\/\.sdk-infra\/actions\/setup-sdk-toolchain\n\s+with:\n((?:\s{10}.*\n)+)/.exec(text)?.[1];
+  assert.ok(step, 'the regenerate job uses setup-sdk-toolchain with inputs');
+  assert.match(step, /cache: 'false'/);
+});
+
+test('setup-sdk-toolchain turns off every cache when cache is false', () => {
+  const action = readFileSync(new URL('../actions/setup-sdk-toolchain/action.yml', import.meta.url), 'utf8');
+  assert.match(action, /\n  cache:\n/, 'cache input');
+  const uses = [...action.matchAll(/- (?:if: [^\n]*\n\s+)?uses: (actions\/setup-(?:node|go|java)|astral-sh\/setup-uv)@[^\n]*\n\s+with:\n((?:\s{8}.*\n)+)/g)];
+  const byAction = Object.fromEntries(uses.map((m) => [m[1], m[2]]));
+  assert.match(byAction['actions/setup-node'], /package-manager-cache: \$\{\{ inputs\.cache == 'true' \}\}/);
+  assert.match(byAction['actions/setup-go'], /cache: \$\{\{ inputs\.cache == 'true' \}\}/);
+  assert.match(byAction['actions/setup-java'], /cache: \$\{\{ inputs\.cache == 'true' && 'maven' \|\| '' \}\}/);
+  assert.match(byAction['astral-sh/setup-uv'], /enable-cache: \$\{\{ inputs\.cache == 'true' && 'auto' \|\| 'false' \}\}/);
+});

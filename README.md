@@ -166,11 +166,26 @@ on:
   issue_comment:
     types: [created]
 permissions: {}
-concurrency:
-  group: backport-${{ github.event.pull_request.number || github.event.issue.number }}
-  cancel-in-progress: false
 jobs:
   backport:
+    # The same gate as sdk-backport.yml's own, here so that concurrency (below) only
+    # admits backport events: at workflow level, an unrelated comment or label would
+    # replace a pending backport run in the group, and the requested target be lost.
+    if: >-
+      (
+        github.event_name != 'issue_comment' &&
+        github.event.pull_request.merged &&
+        (github.event.action == 'closed' || startsWith(github.event.label.name, 'backport '))
+      ) || (
+        github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request &&
+        github.event.comment.user.id != 290741040 &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
+        startsWith(github.event.comment.body, '/backport')
+      )
+    concurrency:
+      group: backport-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write        # Vault JWT for the App key
@@ -225,7 +240,7 @@ post-cherry-pick: |
   [ "$src" = "$dst" ] && exit 0
   while IFS= read -r -d '' f; do
     [ -f "$f" ] || continue   # deleted, or a rename's old path
-    case "$f" in *.go|*.md) SRC="$src" DST="$dst" perl -pi -e 's{\Q$ENV{SRC}\E(?=["/`\s])}{$ENV{DST}}g' -- "$f" || exit 1 ;; esac
+    case "$f" in *.go|*.md) SRC="$src" DST="$dst" perl -pi -e 's{\Q$ENV{SRC}\E(?![A-Za-z0-9_-])}{$ENV{DST}}g' -- "$f" || exit 1 ;; esac
   done < "$BACKPORT_CHANGED_FILES"
 ```
 
