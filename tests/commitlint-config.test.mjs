@@ -3,7 +3,8 @@
 // GitHub squash merges add `Co-authored-by: <name> <id+login@users.noreply.github.com>`
 // trailers. The camunda-sdk-automation bot's is 108 characters, so every backport of a
 // squash commit it co-authored failed footer-max-line-length. The replacement rule must
-// skip exactly those trailers and keep the 100-character limit for everything else.
+// skip those trailers, keep config-conventional's skip for lines containing a URL, and keep
+// the 100-character limit for everything else.
 //
 // commitlint isn't a dependency here, so the rule is exercised directly.
 
@@ -35,6 +36,14 @@ describe("commitlint base config: footer line length", () => {
     assert.ok(BOT_CO_AUTHOR.length > 100);
     assert.equal(check(`${BOT_CO_AUTHOR}\nCo-authored-by: Emily Oram <emily.oram@camunda.com>`), true);
     assert.equal(check(BOT_CO_AUTHOR.replace("Co-authored-by", "co-authored-by")), true);
+  });
+
+  it("keeps config-conventional's exemption for lines containing a URL", () => {
+    const refs = `Refs: https://github.com/camunda/sdk-infra/pull/113#${"x".repeat(80)}`;
+    assert.ok(refs.length > 100);
+    assert.equal(check(`${refs}\n${BOT_CO_AUTHOR}`), true);
+    assert.equal(check(`Refs: http://${"x".repeat(100)}`), true);
+    assert.equal(check(`Refs: ftp://${"x".repeat(100)}`), false);
   });
 
   it("still rejects any other footer line longer than the limit", () => {

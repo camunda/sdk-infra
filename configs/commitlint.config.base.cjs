@@ -14,13 +14,15 @@
 //   };
 
 const FOOTER_MAX_LINE_LENGTH = 100;
+// Same as @commitlint/ensure's max-line-length, which skips any line containing a URL.
+const URL_REGEX = /\bhttps?:\/\/\S+/;
 
 // GitHub writes `Co-authored-by: <name> <id+login@users.noreply.github.com>` trailers on
 // squash merges; a bot's runs past 100 characters and fails every PR that backports it.
 const footerMaxLineLengthExceptCoAuthors = (parsed, when = 'always', value = FOOTER_MAX_LINE_LENGTH) => {
   const long = (parsed.footer ?? '')
     .split(/\r?\n/)
-    .filter((line) => !/^co-authored-by:/i.test(line) && line.length > value);
+    .filter((line) => !/^co-authored-by:/i.test(line) && !URL_REGEX.test(line) && line.length > value);
   const ok = when === 'never' ? long.length > 0 : long.length === 0;
   return [ok, `footer's lines must not be longer than ${value} characters (Co-authored-by lines excepted)`];
 };
