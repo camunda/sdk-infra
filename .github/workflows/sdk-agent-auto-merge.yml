@@ -28,7 +28,24 @@
 #   - unresolve a review thread, or leave a new one   (unresolved threads block)
 #   - request changes on the pull request             (blocks until superseded)
 #   - add the hold label                              (blocks unconditionally)
+#   - with `require-human-approval`, withhold approval, or push a commit after it
+#     (an approval counts only on the head commit it was given on)
 #   - press "Disable auto-merge" in the PR UI         (until the next sweep re-queues)
+#
+# `require-human-approval` (default false) adds one more gate: at least one APPROVED
+# review, on the PR's current head commit, from a human account with write, maintain
+# or admin permission on the repo. Approvals from bots (the Copilot reviewer included)
+# never count. It is off by default because whether agent PRs need a human at all is a
+# policy decision tracked in camunda/sdk-infra#85; the input lets a repo opt in
+# without waiting for it. It narrows what is merged, never widens it.
+#
+# With the gate on, auto-merge is not used at all. GitHub's auto-merge is persistent and
+# merges whatever the head is when the checks go green, so a commit pushed after the
+# approval would merge on the strength of it. Instead the approved commit is merged
+# directly, with `--match-head-commit`, on the first pass where GitHub reports the PR
+# clean (all required checks passed); a pass that finds it not yet clean leaves it for
+# the next one, so merges can lag by up to one sweep interval. The repo then needs no
+# `allow_auto_merge`, but still needs required status checks, or "clean" means nothing.
 #
 # The repo must have auto-merge enabled (`allow_auto_merge`) and a branch ruleset with
 # required status checks; without checks to wait on, GitHub rejects the request.
@@ -82,6 +99,19 @@ on:
         required: false
         default: 'agent-hold'
         type: string
+      require-human-approval:
+        description: >-
+          Require at least one APPROVED review, on the PR's current head commit, from
+          a human (not a bot) who has write, maintain or admin permission on the
+          repository before the PR is queued; auto-merge is withdrawn when the
+          approval goes stale because a later commit was pushed. Off by default,
+          which keeps the existing gates unchanged (camunda/sdk-infra#84, #85). When
+          on, the approved commit is merged directly (pinned to that commit) once
+          GitHub reports the PR clean, instead of arming auto-merge, so a later push
+          cannot ride on the approval; a merge can lag by one sweep interval.
+        required: false
+        default: false
+        type: boolean
       merge-method:
         description: 'squash, merge, or rebase.'
         required: false
@@ -128,6 +158,7 @@ jobs:
       AGENT_BRANCH_PREFIX: ${{ inputs.agent-branch-prefix }}
       ALLOWED_PATHS: ${{ inputs.allowed-paths }}
       HOLD_LABEL: ${{ inputs.hold-label }}
+      REQUIRE_HUMAN_APPROVAL: ${{ inputs.require-human-approval }}
       GH_REPO: ${{ github.repository }}
     steps:
       - name: Select the pull requests to evaluate
@@ -218,8 +249,12 @@ jobs:
           ineligible_reason() {
             pr="$1"
 
+            # Written only when the human-approval gate passes, naming the head commit
+            # it passed for; a stale one from the previous PR must never be read back.
+            rm -f /tmp/approved-head.txt
+
             gh pr view "$pr" --repo "$GH_REPO" \
-              --json author,autoMergeRequest,labels,files > /tmp/pr.json
+              --json author,autoMergeRequest,labels,files,headRefOid,mergeStateStatus > /tmp/pr.json
 
             # The branch prefix is not identity — anyone with push access can create
             # one — so the PR must actually have been opened by an App. Checking the
@@ -263,7 +298,8 @@ jobs:
               query($owner:String!, $name:String!, $number:Int!) {
                 repository(owner:$owner, name:$name) {
                   pullRequest(number:$number) {
-                    reviews(last: 100) { totalCount nodes { state author { login } } }
+                    headRefOid
+                    reviews(last: 100) { totalCount nodes { state commit { oid } author { login __typename } } }
                     reviewThreads(last: 100) { totalCount nodes { isResolved isOutdated } }
                   }
                 }
@@ -303,6 +339,50 @@ jobs:
               printf '%s review thread(s) are unresolved' "$unresolved"
               return
             fi
+
+            # Opt-in (`require-human-approval`): a person must have looked at what is
+            # about to merge. Rulesets on these repos require 0 approvals, so without
+            # this a steered agent change inside the allowed paths merges unseen
+            # (camunda/sdk-infra#84). Every condition below is deliberate:
+            #   - the reviewer is a `User`: a bot (the Copilot reviewer included) is
+            #     not a person, and an App-authored PR must not be approved by an App;
+            #   - the approval is on the *current head*: the agent pushes follow-up
+            #     commits, and an approval of an earlier commit says nothing about them;
+            #   - it is the reviewer's latest decisive review, as for CHANGES_REQUESTED;
+            #   - the reviewer can write to the repo, asked of the collaborator
+            #     permission endpoint. `authorAssociation` is not enough: an org
+            #     MEMBER with read-only access has the same association as a
+            #     maintainer, and their approval carries no authority.
+            # Any lookup that fails reads as "not approved": the gate fails closed.
+            if [ "$REQUIRE_HUMAN_APPROVAL" = "true" ]; then
+              # shellcheck disable=SC2016  # $head is a jq variable, not a shell one
+              approvers="$(jq -r '
+                .data.repository.pullRequest.headRefOid as $head
+                | [ .data.repository.pullRequest.reviews.nodes[]
+                    | select(.state == "CHANGES_REQUESTED" or .state == "APPROVED" or .state == "DISMISSED")
+                    | select(.author != null and .author.__typename == "User")
+                    | select(.author.login | endswith("[bot]") | not) ]
+                | group_by(.author.login) | map(last)
+                | map(select(.state == "APPROVED" and .commit.oid == $head) | .author.login)
+                | .[]' /tmp/reviews.json)"
+              approved=false
+              while IFS= read -r login; do
+                [ -n "$login" ] || continue
+                # A login becomes part of a URL path, so anything unexpected is skipped.
+                [[ "$login" =~ ^[A-Za-z0-9_-]+$ ]] || continue
+                perm="$(gh api "repos/${GH_REPO}/collaborators/${login}/permission" --jq '.permission' 2>/dev/null || true)"
+                # The legacy field folds maintain into write and triage into read.
+                case "$perm" in
+                  admin|write) approved=true; break ;;
+                esac
+              done <<< "$approvers"
+              if [ "$approved" != "true" ]; then
+                # shellcheck disable=SC2016  # the backticks are markdown, not substitution
+                printf 'it has no approval on its current commit from a human with write access, which `require-human-approval` demands'
+                return
+              fi
+              jq -r '.data.repository.pullRequest.headRefOid' /tmp/reviews.json > /tmp/approved-head.txt
+            fi
           }
 
           merge_flags="--auto --${MERGE_METHOD}"
@@ -317,7 +397,45 @@ jobs:
             queued="$(jq -r 'if .autoMergeRequest then "true" else "false" end' /tmp/pr.json)"
 
             if [ -z "$reason" ]; then
-              if [ "$queued" = "true" ]; then
+              if [ "$REQUIRE_HUMAN_APPROVAL" = "true" ]; then
+                # Never arm auto-merge here. GitHub's auto-merge is persistent: it merges
+                # whatever the head is when the required checks go green, and a push by a
+                # write-capable account (the App that publishes the agent's follow-up
+                # commits) does not disarm it. An approval verified for one commit would
+                # then cover a later, unreviewed one, and a sweep that withdraws it only
+                # runs afterwards. So the approved commit is merged directly, once, and
+                # the merge request names that commit: GitHub refuses it if the head has
+                # moved. Anything not ready yet is left for the next pass.
+                approved_head="$(cat /tmp/approved-head.txt 2>/dev/null || true)"
+                pr_head="$(jq -r '.headRefOid' /tmp/pr.json)"
+                mergeable="$(jq -r '.mergeStateStatus' /tmp/pr.json)"
+                disarmed=true
+                if [ "$queued" = "true" ]; then
+                  echo "Auto-merge is armed, which the approval gate does not allow; withdrawing."
+                  gh pr merge "$pr" --repo "$GH_REPO" --disable-auto || disarmed=false
+                fi
+                if [ "$disarmed" != "true" ]; then
+                  echo "::error::Could not disable auto-merge on #${pr}; not merging it."
+                  failed=1
+                elif ! [[ "$approved_head" =~ ^[0-9a-f]{40}$ ]] || [ "$pr_head" != "$approved_head" ]; then
+                  echo "The head moved while this was evaluated; the next pass re-checks it."
+                elif [ "$mergeable" != "CLEAN" ]; then
+                  echo "Approved at ${approved_head}, but GitHub reports ${mergeable}; the next pass re-checks it."
+                else
+                  direct_flags="--${MERGE_METHOD} --match-head-commit ${approved_head}"
+                  [ "$DELETE_BRANCH" = "true" ] && direct_flags="${direct_flags} --delete-branch"
+                  # shellcheck disable=SC2086  # direct_flags is a deliberate word list
+                  if gh pr merge "$pr" --repo "$GH_REPO" $direct_flags; then
+                    echo "Merged ${approved_head}."
+                    gh pr comment "$pr" --repo "$GH_REPO" --body \
+                      "🤖 All gates passed and a person with write access approved commit \`${approved_head}\`, so I merged exactly that commit. With \`require-human-approval\` I merge directly rather than arming auto-merge, so a later push cannot ride on this approval." \
+                      || echo "::warning::Could not comment on #${pr}."
+                  else
+                    echo "::error::Could not merge commit ${approved_head} of #${pr} (the head may have moved, or the merge method is not allowed)."
+                    failed=1
+                  fi
+                fi
+              elif [ "$queued" = "true" ]; then
                 echo "Already queued for auto-merge."
               else
                 # shellcheck disable=SC2086  # merge_flags is a deliberate word list

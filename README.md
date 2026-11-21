@@ -127,6 +127,23 @@ A companion `sdk-agent-pr-followup.yml` reacts to feedback on the resulting pull
 path runs on an hourly `schedule` rather than on `pull_request_review`, because GitHub
 parks any run the `Copilot` actor triggers behind manual approval.
 
+`sdk-agent-auto-merge.yml` queues an agent pull request for GitHub's auto-merge once its
+threads are resolved, no changes are requested and its diff stays inside `allowed-paths`.
+Rulesets on these repos require no approvals, so by default a human never has to look at
+what merges. Set `require-human-approval: true` to also require an approval, on the
+pull request's current head commit, from a person with write access (bot approvals,
+the Copilot reviewer included, never count; a later push makes the approval stale). With
+it on, auto-merge is not armed: the approved commit is merged directly, pinned to that
+commit, once GitHub reports the pull request clean, so a later push cannot ride on the
+approval. A merge can therefore lag by one sweep interval. The input is optional and
+defaults to `false`.
+
+Text that reaches the agent from outside (issue bodies, comments, bot reviews, CI logs)
+is passed between per-run nonce markers as data to be ignored as instructions. A small
+scan, `.github/scripts/flag-injection.sh`, additionally warns the agent when that text
+looks like instructions aimed at it. That is a mitigation, easy to evade: what limits an
+injection that gets through is that the agent job holds no credentials.
+
 Declare any tracked file the verify commands legitimately regenerate (a lockfile, a
 recorded fixture) in `verify-artifacts`; anything they touch outside that allow-list
 fails the run rather than being swept into the commit.
