@@ -1,0 +1,157 @@
+# Reusable workflow: public-API compatibility guard for Camunda SDKs.
+#
+# Owns the policy every SDK shares; the caller supplies only the language part.
+#   - mode 'pr': compare the PR with its base branch, so a PR answers only for its
+#     own changes. Call it on pull_request to stable/** with types
+#     [opened, synchronize, reopened, labeled, unlabeled, edited].
+#   - mode 'release': compare what is about to be tagged with the last published
+#     release of the major.
+#   - A major with no published release yet has nothing to protect and passes.
+#   - The `api-break-approved` label makes a break pass (still listed, as a warning).
+#
+# The compare command is run as `<compare> <old-dir> <new-dir>` and must exit
+# 0 = no breaks, 1 = breaks, anything else = tool error.
+#
+# Usage:
+#   jobs:
+#     api-compat:
+#       uses: camunda/sdk-infra/.github/workflows/sdk-api-compat.yml@v1
+#       with:
+#         language: go
+#         setup-commands: go -C tools/apicompat build -o "$RUNNER_TEMP/apicompat" .
+#         compare: '"$RUNNER_TEMP/apicompat" --compare'
+
+name: SDK API compatibility
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: "'pr' (compare with the PR base branch) or 'release' (compare with the last published release of the major)."
+        required: false
+        default: 'pr'
+        type: string
+      language:
+        description: 'SDK language for actions/setup-sdk-toolchain (js, python, csharp, go, rust, java). Empty skips toolchain setup.'
+        required: false
+        default: ''
+        type: string
+      setup-commands:
+        description: 'Shell run after toolchain setup, e.g. to build the compare tool.'
+        required: false
+        default: ''
+        type: string
+      compare:
+        description: 'Command invoked as `<compare> <old-dir> <new-dir>`; exit 0 = no breaks, 1 = breaks, other = tool error. Evaluated by bash, so it may reference $RUNNER_TEMP.'
+        required: true
+        type: string
+      major:
+        description: 'Major to protect. Default: N from stable/N (pr mode: the PR base branch; release mode: the pushed branch).'
+        required: false
+        default: ''
+        type: string
+      tag-pattern:
+        description: 'Glob matching published release tags of a major; {major} is replaced. Prerelease tags (a "-" after a version digit, e.g. v8.1.0-alpha.1) are ignored.'
+        required: false
+        default: 'v{major}.*'
+        type: string
+      ref:
+        description: 'release mode: ref to check (what is about to be tagged). Default: the triggering commit.'
+        required: false
+        default: ''
+        type: string
+      approved:
+        description: 'Treat breaks as approved. Default: the PR carries the api-break-approved label.'
+        required: false
+        default: false
+        type: boolean
+      sdk-infra-ref:
+        description: 'Ref of camunda/sdk-infra to load the shared script and actions from.'
+        required: false
+        default: 'v1'
+        type: string
+      runs-on:
+        required: false
+        default: 'ubuntu-latest'
+        type: string
+      timeout-minutes:
+        required: false
+        default: 20
+        type: number
+
+permissions:
+  contents: read
+
+jobs:
+  api-compat:
+    name: API compatibility
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          # Full history and tags: the release baseline is found among the tags.
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Check out the base branch
+        if: inputs.mode == 'pr'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: .api-compat-base
+          persist-credentials: false
+
+      - name: Check out shared sdk-infra helpers
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          repository: camunda/sdk-infra
+          ref: ${{ inputs.sdk-infra-ref }}
+          path: .sdk-infra
+          persist-credentials: false
+
+      - name: Exclude helper checkouts
+        run: printf '%s\n' '/.sdk-infra/' '/.api-compat-base/' >> .git/info/exclude
+
+      - name: Set up toolchain
+        if: inputs.language != ''
+        uses: ./.sdk-infra/actions/setup-sdk-toolchain
+        with:
+          language: ${{ inputs.language }}
+
+      - name: Set up compare tool
+        if: inputs.setup-commands != ''
+        env:
+          SETUP_COMMANDS: ${{ inputs.setup-commands }}
+        run: bash -euo pipefail -c "$SETUP_COMMANDS"
+
+      - name: Check API compatibility
+        env:
+          API_COMPAT_MODE: ${{ inputs.mode }}
+          API_COMPAT_INPUT_MAJOR: ${{ inputs.major }}
+          API_COMPAT_BRANCH: ${{ inputs.mode == 'pr' && github.base_ref || github.ref_name }}
+          API_COMPAT_COMPARE_CMD: ${{ inputs.compare }}
+          API_COMPAT_TAG_PATTERN: ${{ inputs.tag-pattern }}
+          API_COMPAT_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'api-break-approved') }}
+          API_COMPAT_FORCE_APPROVED: ${{ inputs.approved }}
+        run: |
+          set -uo pipefail
+          major="$API_COMPAT_INPUT_MAJOR"
+          if [ -z "$major" ]; then
+            case "$API_COMPAT_BRANCH" in
+              stable/*) major="${API_COMPAT_BRANCH#stable/}" ;;
+              *) echo "::error::Not a stable/<N> branch (${API_COMPAT_BRANCH}); pass the 'major' input."; exit 2 ;;
+            esac
+          fi
+          approved=false
+          if [ "$API_COMPAT_LABEL" = true ] || [ "$API_COMPAT_FORCE_APPROVED" = true ]; then approved=true; fi
+          # The wrapper lets the compare command use shell syntax and $RUNNER_TEMP.
+          wrapper="$RUNNER_TEMP/api-compat-compare.sh"
+          printf '#!/usr/bin/env bash\n%s "$@"\n' "$API_COMPAT_COMPARE_CMD" > "$wrapper"
+          chmod +x "$wrapper"
+          API_COMPAT_MAJOR="$major" API_COMPAT_APPROVED="$approved" \
+          API_COMPAT_COMPARE="$wrapper" API_COMPAT_NEW_DIR="$PWD" \
+          API_COMPAT_OLD_DIR="$PWD/.api-compat-base" \
+            bash .sdk-infra/scripts/api-compat.sh

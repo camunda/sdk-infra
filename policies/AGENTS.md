@@ -139,6 +139,25 @@ Choosing `Found-by`, the quality layer that caught the bug:
 
 `Affects`: `main` is the next release (alpha); `stable` is a released `stable/N` line.
 
+## Public-API compatibility on stable branches
+
+A `stable/N` line must not break customer code built against a published `N.x` release. The
+`API compatibility` check (shared workflow `camunda/sdk-infra/.github/workflows/sdk-api-compat.yml`)
+enforces this on every PR to `stable/**`, comparing the PR with its base branch, and again in the
+release workflow against the last published `N.x` release.
+
+- **What counts as a break**: any change to the public API that can stop existing customer code
+  from compiling or type-checking — removing or renaming a public type, member, function or
+  parameter; changing a signature or type incompatibly; adding a required parameter or abstract
+  member. The language tool decides the details. Additions are not breaks.
+- **The label**: if a break is intended (e.g. a bug fix that must change the API), apply
+  `api-break-approved` to the PR. The check still lists the breaks but passes. Otherwise make
+  the change backward compatible.
+- A `stable/N` with no `N.x` release yet has nothing to protect and passes.
+- **Run it locally**: run the repo's compare tool as `<compare> <old-dir> <new-dir>` against a
+  checkout of the base branch (exit `1` = breaks), or run the shared policy script with
+  `API_COMPAT_MODE=release API_COMPAT_MAJOR=<N> API_COMPAT_COMPARE=<compare> bash node_modules/@camunda8/sdk-infra/scripts/api-compat.sh`.
+
 ## Pre-push checklist
 
 Before pushing any commits, always run a full build. If the build modifies any files (e.g., generated code drift, README snippet drift), commit those changes before pushing.

@@ -91,3 +91,34 @@ jobs:
           stack: ${{ matrix.stack }}
           artifact-name: docker-logs-${{ matrix.stack }}
 
+
+  # End-to-end fixture callers of the reusable API-compat workflow with a fake compare
+  # command. Cases that must fail (unapproved break, tool error) would turn CI red, so
+  # they are covered by tests/api-compat.test.mjs against the same script.
+  api-compat-pass:
+    name: sdk-api-compat (pass)
+    uses: ./.github/workflows/sdk-api-compat.yml
+    with:
+      mode: release
+      major: '1'
+      compare: env true
+      sdk-infra-ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+  api-compat-approved-break:
+    name: sdk-api-compat (approved break)
+    uses: ./.github/workflows/sdk-api-compat.yml
+    with:
+      mode: release
+      major: '1'
+      compare: env false
+      approved: true
+      sdk-infra-ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+  api-compat-no-release:
+    name: sdk-api-compat (no release yet)
+    uses: ./.github/workflows/sdk-api-compat.yml
+    with:
+      mode: release
+      major: '999'
+      compare: env false
+      sdk-infra-ref: ${{ github.event.pull_request.head.sha || github.sha }}

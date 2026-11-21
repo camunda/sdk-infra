@@ -91,6 +91,7 @@ The currently promoted stable major is set via the `CAMUNDA_SDK_CURRENT_STABLE_M
 | `sdk-bundle-spec.yml` | Fetch and bundle upstream OpenAPI spec |
 | `sdk-commitlint.yml` | Lint PR commit messages |
 | `sdk-breaking-change-guard.yml` | Fail PR CI when commits contain `BREAKING CHANGE:` notes in body/footer that would trigger a major version bump; bypassed by the `breaking-change-approved` label |
+| `sdk-api-compat.yml` | Public-API compatibility guard for `stable/**`: `mode: pr` compares a PR with its base branch, `mode: release` with the last published release of the major; passes when no `N.x` release exists yet; `api-break-approved` label approves a break. Policy in `scripts/api-compat.sh` (tested in `tests/api-compat.test.mjs`); callers supply `language`, `setup-commands` and a `compare <old-dir> <new-dir>` command (exit 0/1/other) |
 | `sdk-spec-ref-guard.yml` | Validate `SPEC_REF` overrides with expiry |
 | `sdk-detect-new-ops.yml` | Detect operations missing SDK example coverage; opens per-SDK issues and a cross-linked summary (requires `SDK_ISSUE_TOKEN` secret for cross-repo issues) |
 | `scheduled-detect-new-ops.yml` | Scheduled daily check for SDK coverage gaps with cross-repo issue creation. A thin caller: it bundles the spec, then delegates to `sdk-detect-new-ops.yml` |
