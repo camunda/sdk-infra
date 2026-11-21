@@ -45,7 +45,7 @@ jobs:
       - name: Fetch and bundle spec
         run: |
           mkdir -p current-spec
-          npx --yes camunda-schema-bundler@2.5.0 \
+          npx --yes camunda-schema-bundler@2.5.1 \
             --ref main \
             --deref-path-local \
             --output-spec current-spec/rest-api.bundle.json \
