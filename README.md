@@ -6,10 +6,10 @@ Shared infrastructure for Camunda SDK repositories. This repo provides reusable 
 
 | Directory | Purpose |
 |-----------|---------|
-| `.github/workflows/` | Reusable CI workflows (spec bundling, commitlint, integration testing, agent example coverage) |
+| `.github/workflows/` | Reusable CI workflows (spec bundling, commitlint, integration testing, agent example coverage, API compatibility) |
 | `actions/` | Composite GitHub Actions (start Camunda stack, sync snippets, check coverage, set up toolchain) |
 | `docker/` | Shared Docker Compose files for integration testing |
-| `scripts/` | Unified CLI tools (snippet sync, example coverage check, operation detection) |
+| `scripts/` | Unified CLI tools (snippet sync, example coverage check, operation detection, API compatibility policy) |
 | `configs/` | Shared commitlint and semantic-release base configurations |
 | `schema/` | JSON schema for `operation-map.json` validation |
 | `policies/` | Canonical contributor guidelines (AGENTS.md) |
@@ -266,7 +266,49 @@ Automating both steps (auto-merging clean backports, and rebuilding drafted ones
 
 PRs from forks get no secrets on `pull_request`; backport those with a `/backport` comment.
 
-### 9. Shared configs
+### 9. Public-API compatibility guard (reusable workflow)
+
+`sdk-api-compat.yml` blocks changes to a `stable/N` line that would break customer code
+compiled against a published `N.x` release. It owns the policy; your repo supplies only the
+language tool, as a `compare` command run as `<compare> <old-dir> <new-dir>` that exits
+`0` (no breaks), `1` (breaks) or anything else (tool error, always fails).
+
+```yaml
+# .github/workflows/api-compat.yml
+on:
+  pull_request:
+    branches: ["stable/**"]
+    # labeled/unlabeled re-evaluate the label; edited re-evaluates a retargeted PR.
+    types: [opened, synchronize, reopened, labeled, unlabeled, edited]
+permissions:
+  contents: read
+concurrency:
+  group: api-compat-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  api-compat:
+    uses: camunda/sdk-infra/.github/workflows/sdk-api-compat.yml@v1
+    with:
+      language: go
+      setup-commands: go -C tools/apicompat build -o "$RUNNER_TEMP/apicompat" .
+      compare: '"$RUNNER_TEMP/apicompat" --compare'
+```
+
+- **`mode: pr`** (default) compares the PR with its base branch, so a PR answers only for its own
+  changes. **`mode: release`** (call it from the release workflow before tagging) compares the
+  checked-out `ref` with the last published release of the major.
+- The major is `N` from `stable/N` (override with `major`). Its published releases are the tags
+  matching `tag-pattern` (default `v{major}.*`, prereleases ignored). With none yet, the check
+  passes: there is nothing to protect.
+- The `api-break-approved` label (or `approved: true`) makes a break pass; the breaks are still
+  listed as a warning and in the step summary. Without it the job fails with a hint to apply the
+  label or make the change backward compatible.
+
+Run the same policy locally with `scripts/api-compat.sh` (see its header for the environment
+variables), e.g.
+`API_COMPAT_MODE=release API_COMPAT_MAJOR=8 API_COMPAT_COMPARE=./my-compare.sh bash scripts/api-compat.sh`.
+
+### 10. Shared configs
 
 ```js
 // commitlint.config.cjs
