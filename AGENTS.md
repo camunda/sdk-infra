@@ -145,11 +145,17 @@ Five design points are load-bearing and should not be undone casually:
   review threads to resolve from `triage` or the workflow inputs, never from the agent
   job. Do not move the push, the Vault step or any write permission back into the agent's
   job (camunda/sdk-infra#84).
-- **Ordering.** The run is `agent → inspect → verify → reconcile → bundle`, then `push` in
-  `publish`. Inspecting the
+- **Ordering.** The run is `agent → inspect → lint messages → verify → reconcile → bundle`,
+  then `push` in `publish`. Inspecting the
   working tree *before* verification is the only moment at which a dirty tree
   unambiguously means the agent left work uncommitted; running verify first conflates
   that with a verify command regenerating a lockfile or a recorded fixture.
+- **Commit messages are linted before publishing.** `.github/scripts/lint-commit-messages.sh`
+  runs the PR's commitlint check (same install path as `sdk-commitlint.yml`, so the same
+  commitlint version) over the agent's commits while they can still be reworded. After
+  the push the follow-up workflow only fast-forwards, so it cannot repair a bad message
+  on the branch; it rejects a rewritten history in the agent job with that explanation
+  instead of letting `publish` report it as the branch having moved.
 - **`verify-artifacts`.** Files the verify commands are allowed to regenerate are
   declared as globs. Anything they touch outside that allow-list fails the run rather
   than being swept into the commit.

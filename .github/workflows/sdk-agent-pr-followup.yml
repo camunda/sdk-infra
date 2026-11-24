@@ -587,8 +587,10 @@ jobs:
              your final message instead of editing it.
           3. If the feedback asks for a richer example, remember what a good one looks
              like: a meaningful filter value rather than an empty request object, a page
-             limit where the operation is paginated, the consistency option where the
-             operation is eventually consistent, and something done with the result.
+             limit where the operation is paginated, and something done with the result.
+             It must also finish normally when a search or list returns no items, so
+             never wait or poll until results are non-empty; keep the consistency
+             option for reads of something the example itself just created.
           4. If you disagree with the feedback, do not change the code — explain your
              reasoning in your final message instead. Making no commits is a valid
              outcome and is reported as such.
@@ -600,7 +602,16 @@ jobs:
              whether regenerated output belongs in its own commit, and stop only
              once `git status --porcelain --untracked-files=all` prints nothing.
              A dirty tree fails this workflow and nothing is pushed.
-          6. Read AGENTS.md for the build/verification pipeline, then finish by running
+          6. Only add commits on top of the branch. Never amend, rebase, squash or
+             reword a commit that is already on it: the workflow pushes fast-forwards
+             only, so rewritten history is discarded. If the problem is the message of
+             a commit already on the branch (a failing commitlint check, for example),
+             make no changes and say in your final message which commits need
+             rewording; a maintainer has to do that.
+             Write new commit messages with `git commit -F <file>` or one `-m` per
+             paragraph, never `\n` inside a `-m` string, and check them with
+             `bash .sdk-infra/.github/scripts/lint-commit-messages.sh "origin/$(git branch --show-current)" HEAD`.
+          7. Read AGENTS.md for the build/verification pipeline, then finish by running
              the exact commands below. They are the gate this workflow applies: a green
              lint, typecheck or test run does NOT mean they pass. Do not stop until
              every one of them passes.
@@ -653,12 +664,27 @@ jobs:
             exit 1
           fi
 
+          # Caught here rather than in `publish`, where the same non-fast-forward reads
+          # as the branch having moved, and before verification spends its time on
+          # commits that can never be pushed.
+          if ! git merge-base --is-ancestor "origin/${BRANCH}" HEAD; then
+            echo "::error::The agent rewrote commits already on ${BRANCH}; follow-ups can only add commits on top, so nothing was pushed."
+            echo "If a commit message on the branch is the problem, a maintainer has to reword it."
+            exit 1
+          fi
+
           if [ -z "$(git log --oneline "origin/${BRANCH}..HEAD")" ]; then
             echo "::notice::The agent made no commits — nothing to push."
             echo "has-commits=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           echo "has-commits=true" >> "$GITHUB_OUTPUT"
+
+      # Only the agent's new commits: the ones already on the branch are not its to
+      # fix (see the prompt), and failing on them would block every follow-up.
+      - name: Lint the agent's commit messages
+        if: steps.agent.outputs.has-commits == 'true'
+        run: bash "${SDK_INFRA}/.github/scripts/lint-commit-messages.sh" "origin/${BRANCH}" HEAD
 
       - name: Verify
         if: steps.agent.outputs.has-commits == 'true'
