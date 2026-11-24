@@ -18,9 +18,9 @@ const scriptPath = path.resolve(__dirname, "../.github/scripts/lint-commit-messa
 
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 
-function stubBin(dir, npxExit) {
+function stubBin(dir, npmExit, npxExit) {
   mkdirSync(dir, { recursive: true });
-  for (const [name, code] of [["npm", 0], ["npx", npxExit]]) {
+  for (const [name, code] of [["npm", npmExit], ["npx", npxExit]]) {
     const file = path.join(dir, name);
     writeFileSync(file, `#!/bin/sh\nexit ${code}\n`);
     chmodSync(file, 0o755);
@@ -28,8 +28,8 @@ function stubBin(dir, npxExit) {
   return dir;
 }
 
-function run(repo, { npxExit = 0 } = {}) {
-  const bin = stubBin(path.join(repo, "..", `bin-${npxExit}`), npxExit);
+function run(repo, { npmExit = 0, npxExit = 0 } = {}) {
+  const bin = stubBin(path.join(repo, "..", `bin-${npmExit}-${npxExit}`), npmExit, npxExit);
   return spawnSync("bash", [scriptPath, "base", "HEAD"], {
     cwd: repo,
     encoding: "utf8",
@@ -64,6 +64,11 @@ describe("lint-commit-messages.sh", () => {
 
   it("fails when commitlint fails", () => {
     const res = run(repo, { npxExit: 1 });
+    assert.equal(res.status, 1);
+  });
+
+  it("fails when the install fails, even if commitlint would then pass", () => {
+    const res = run(repo, { npmExit: 1, npxExit: 0 });
     assert.equal(res.status, 1);
   });
 

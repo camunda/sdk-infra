@@ -45,13 +45,17 @@ cleanup() { git worktree remove --force "$worktree" >/dev/null 2>&1 || rm -rf "$
 trap cleanup EXIT
 git worktree add --detach --quiet "$worktree" "$to"
 
+# The `|| status=1` on this subshell disables `set -e` inside it, so each step
+# that must stop the run says so explicitly. Otherwise a failed install (a
+# lifecycle script, say) is ignored whenever commitlint still happens to run,
+# where sdk-commitlint.yml would have stopped at the install.
 (
-  cd "$worktree"
+  cd "$worktree" || exit 1
   if [ -f package.json ] && grep -q commitlint package.json; then
-    npm ci --no-audit --no-fund --loglevel=error >/dev/null
+    npm ci --no-audit --no-fund --loglevel=error >/dev/null || exit 1
   else
     npm install --no-save --no-audit --no-fund --loglevel=error \
-      @commitlint/cli @commitlint/config-conventional >/dev/null
+      @commitlint/cli @commitlint/config-conventional >/dev/null || exit 1
   fi
   npx --no-install commitlint --from "$from" --to "$to" --verbose
 ) || status=1
