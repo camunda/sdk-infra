@@ -302,11 +302,15 @@ jobs:
              - if the operation accepts a filter, set at least one meaningful filter
                field rather than passing an empty request object;
              - if the operation is paginated, set a page limit;
-             - if the operation is eventually consistent, use the SDK's consistency
-               option the way the neighbouring examples do;
              - do something with the result — iterate the items, read a field — rather
                than only showing that the call returns.
              Match the depth of the surrounding examples in the same file.
+             An example must also finish normally on a valid response. A search or list
+             can legitimately return no items, for instance history that was never
+             recorded or a filter nothing matches, so never wait or poll until it is
+             non-empty: no consistency wait whose default predicate rejects an empty
+             page, no retry loop on zero items. Reserve the SDK's consistency option
+             for reads of something the example itself just created.
           3. Never hand-edit generated code. If the SDK does not expose an operation
              yet, regenerate from the spec using the pipeline documented in AGENTS.md
              and commit the regenerated output in its own commit, separate from the
@@ -315,6 +319,14 @@ jobs:
              (feat, chore, docs, ...), lower-case imperative subject, 5-100 characters.
              Do not use `fix:` for anything that is not a user-facing bug fix, and never
              add a `BREAKING CHANGE:` marker — both trigger a release.
+             Write a message with a body via `git commit -F <file>` or one `-m` per
+             paragraph. Never put `\n` inside a `-m` string: git stores it literally,
+             joining the body and footer into one line that fails the check.
+             Check your commits with
+             `bash .sdk-infra/.github/scripts/lint-commit-messages.sh origin/main HEAD`
+             (substituting the default branch if it is not `main`) and reword any that
+             fail before you finish. The workflow runs the same check and opens no PR
+             if it fails.
           5. Stay inside the example surface: examples/, examples/operation-map.json, the
              docs this repo requires for a new operation, and regenerated SDK output. Do
              NOT modify generator sources (hooks/, scripts/, the generator project). If
@@ -378,6 +390,13 @@ jobs:
             exit 0
           fi
           echo "has-commits=true" >> "$GITHUB_OUTPUT"
+
+      # Here, while the commits are unpublished, is the last point a bad message can
+      # be fixed by rewording. Once pushed, the follow-up workflow only fast-forwards
+      # the branch, so a message the PR's commitlint rejects needs a human.
+      - name: Lint the agent's commit messages
+        if: steps.agent.outputs.has-commits == 'true'
+        run: bash "${SDK_INFRA}/.github/scripts/lint-commit-messages.sh" "origin/${BASE}" HEAD
 
       - name: Verify
         if: steps.agent.outputs.has-commits == 'true'
