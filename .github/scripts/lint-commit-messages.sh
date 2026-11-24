@@ -28,7 +28,7 @@ status=0
 literal=""
 for sha in $(git rev-list "${from}..${to}"); do
   if git log -1 --format=%B "$sha" \
-    | grep -Eq '\\n\\n[A-Za-z]|\\n([A-Za-z][A-Za-z-]*: |(Closes|Fixes|Resolves|Refs) #)'; then
+    | grep -Eiq '\\n\\n[a-z]|\\n([a-z][a-z-]*: |(close[sd]?|fix(e[sd])?|resolve[sd]?|refs?) #)'; then
     literal+="$(git log -1 --format='%h %s' "$sha")"$'\n'
   fi
 done

@@ -72,14 +72,22 @@ describe("lint-commit-messages.sh", () => {
     assert.equal(res.status, 1);
   });
 
-  it("names commits whose message holds a literal \\n", () => {
-    git(repo, "commit", "-q", "--allow-empty", "-m", "docs: add example", "-m", "Body.\\n\\nRefs #1");
-    const res = run(repo);
-    assert.equal(res.status, 1);
-    assert.match(res.stdout, /literal '\\n'/);
-    assert.match(res.stdout, /^ {2}[0-9a-f]+ docs: add example$/m);
-    git(repo, "reset", "-q", "--hard", "HEAD~1");
-  });
+  for (const tail of [
+    "Body.\\n\\nRefs #1",
+    "Body.\\ncloses #1",
+    "Body.\\nFixes #1",
+    "Body.\\nresolved #1",
+    "Body.\\nCo-authored-by: A <a@example.com>",
+  ]) {
+    it(`names commits whose message holds a literal \\n (${tail})`, () => {
+      git(repo, "commit", "-q", "--allow-empty", "-m", "docs: add example", "-m", tail);
+      const res = run(repo);
+      assert.equal(res.status, 1);
+      assert.match(res.stdout, /literal '\\n'/);
+      assert.match(res.stdout, /^ {2}[0-9a-f]+ docs: add example$/m);
+      git(repo, "reset", "-q", "--hard", "HEAD~1");
+    });
+  }
 
   it("does not flag prose that mentions \\n", () => {
     git(repo, "commit", "-q", "--allow-empty", "-m", "ci: reject literal \\n in messages",
